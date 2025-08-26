@@ -307,8 +307,8 @@ def assemble_html(tpl: Templates, pages: List[Dict], site_title: str) -> str:
 # ====================================================================
 def main():
     cwd = Path(os.getcwd())
-    src_root = cwd / "source"
-    tgt_root = cwd / "target"
+    src_root = cwd / "source_code"
+    tgt_root = cwd / "target_code"
     tpldir = cwd / "templates"
 
     tpl = Templates(tpldir)
