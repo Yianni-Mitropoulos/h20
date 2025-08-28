@@ -1,0 +1,154 @@
+========================
+=== Congratulations! ===
+========================
+
+@ paragraph
+Congratulations on installing QubesOS!
+
+@ paragraph
+This guide will help you configure your operating system's <strong>disk storage behaviour</strong> to best support your  overall secpride posture.
+
+@ paragraph
+Setting up disk storage behaviour is the most painful part of this whole process. If you're not someone who feels comfortable with command line interfaces, please just try to push through with all the willpower you can muster. Subsequent guides depend much less on the command line interface; you just have to get through this one.
+
+@ paragraph
+If you're ever unsure what a term means, how to perform a step, or why we're performing it, I suggest consulting with an AI chatbot.
+
+======================================
+=== Understand Qubes Storage Pools ===
+======================================
+
+@ paragraph
+Qubes organizes both persistent and ephemeral storage using <em>Qubes storage pools</em>. Most Qubes storage pools are backed by something called a <em>logical volume</em>, which is itself backed by a <em>volume group</em>, which is back by a <em>physical volume</em>.
+
+@ paragraph
+The default Qubes storage pool created by the installer is called <code>vm-pool</code>, and it's backed by a logical volume that's also (rather confusingly) called <code>vm-pool</code>, which is itself backed by a volume group called <em>qubes_dom0</em>.
+
+@ paragraph
+The role of this Qubes storage pool is to support persistent storage on the main drive where QubesOS is installed. Meanwhile, the underlying logical volume is indifferent to whether storage ought to be persistent or ephemeral.
+
+@ paragraph
+Our first order of business is therefore creating a new Qubes storage pool, backed by the same logical volume, but providing ephemeral storage.
+
+============================================
+=== Check How Your Storage Is Configured ===
+============================================
+
+@ paragraph
+Run the following in <code>dom0</code> to list all Qubes storage pools.
+
+@ bash
+qvm-pool -l
+
+@ paragraph
+One of the entries should be <code>vm-pool</code>. If you don't see it, your system is configured differently to mine, and you might need to adjust what you're doing accordingly.
+
+@ paragraph
+To get info about this pool, run:
+
+@ bash
+qvm-pool -i vm-pool
+
+@ paragraph
+You should see that it's backed by a 'thin_pool' called <code>vm-pool</code>, and by a 'volume_group' called <code>qubes_dom0</code>. Once again, if you see different names, your system is obviously configured differently to mine, and you might need to adjust what you're doing accordingly.
+
+@ paragraph
+The rest of the guide assumes your system and my system use the same names.
+
+=========================================================
+=== Create A Qubes Storage Pool For Ephemeral Storage ===
+=========================================================
+
+@ paragraph
+The following code creates a new Qubes storage pool called <code>vm-pool-ephemeral</code> based on the same logical volume that the Qubes storage pool we were previously working with was based on, namely <code>vm-pool</code>.
+
+@ bash
+qvm-pool add vm-pool-ephemeral lvm_thin -o thin_pool=vm-pool -o volume_group=qubes_dom0
+
+@ paragraph
+To configure the new Qubes storage pool we just created for ephemeral storage, run the following command.
+
+@ bash
+qvm-pool -s vm-pool-ephemeral -o ephemeral_volatile=True
+
+@ paragraph
+Now we'll tell QubesOS that new VMs should use this for their volatile storage. To do this, run the following command.
+
+@ bash
+qubes-prefs default_pool_volatile vm-pool-ephemeral
+
+==================================================
+=== Redirect User Data Storage To HDD: The Why ===
+==================================================
+
+@ paragraph
+We'll now set up persistent user data so that it's stored on HDD, instead of the default volume (which is almost surely a SSD).
+
+@ paragraph
+The purpose of this is to improve data deletability. It also reduces the cost per gigabyte, as an ancillary bonus. 
+
+@ paragraph
+Of course, there's also a downside. Persistent files will load and save slightly slower, but it's usually worth it.
+
+==========================
+=== Safe To Overwrite? ===
+==========================
+
+@ paragraph
+This guide assumes the HDD is new, or at least safe to overwrite.
+
+@ paragraph
+If that's not true, you'll have to adapt accordingly. If you're not very tech savvy, I recommend just going out and buying a new HDD. After all, they're not every expensive, the extra space is always handy, and this allows you to follow this guide letter-for-letter.
+
+============================
+=== Identify Device Name ===
+============================
+
+@ paragraph
+The first step is to setting up automatic HDD use is to identify the name of the disk, viewed as a device. To do this, run the following in <code>dom0</code>.
+
+@ bash
+lsblk -d
+
+@ paragraph
+The biggest one is usually going to be the HDD device. Type its name below once you've identified it:
+
+@ input (xxx)
+Name of your HDD device (e.g. "sda", "sdb", etc.)
+
+===============================
+=== Set Up The Volume Group ===
+===============================
+
+@ paragraph
+<strong>Warning:</strong> don't perform the next step unless the disk is empty. If it's not empty, you need to move the data you want elsewhere, in which case you should also consider wiping the disk before proceeding, to improve your overall privacy posture. Consult with AI if you're not sure.
+
+@ paragraph
+Start by creating a physical volume backed by the device.
+
+@ bash
+sudo pvcreate /dev/sdxxx
+
+@ paragraph
+Next, create a volume group backed by the physical volume you just created.
+
+@ bash
+sudo vgcreate qubes_sdxxx /dev/sdxxx
+
+@ paragraph
+Now create a logical volume from that:
+
+@ bash
+sudo lvcreate -T qubes_sdxxx/pool --size 100%FREE
+
+@ paragraph
+We'll now make a Qubes storage pool backed by that:
+
+@ bash
+qvm-pool add sdxxx-pool lvm_thin -o volume_group=qubes_sdxxx -o thin_pool=pool
+
+@ paragraph
+Finally, we'll register that that as the default Qubes storage pool for every home directory:
+
+@ bash
+qubes-prefs default_pool_private sdxxx-pool

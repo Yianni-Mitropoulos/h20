@@ -1,6 +1,5 @@
 # Ignore everything by default
-*
-!.gitignore
+*.html
 
 # Whitelist specific files
-!index.html
+!home.html

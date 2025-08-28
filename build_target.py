@@ -1,7 +1,6 @@
 #!/usr/bin/env python3
 import os
 import re
-import html
 from pathlib import Path
 from typing import List, Dict, Optional
 
@@ -20,7 +19,7 @@ class Templates:
         self.tpl_ulist = (base / "element_unordered_list.html").read_text(encoding="utf-8")
         self.tpl_input = (base / "element_input_field.html").read_text(encoding="utf-8")
 
-        # Code (language-specific) — you said only bash is needed
+        # Code (language-specific) — only bash is needed
         self.tpl_bash = (base / "element_bash.html").read_text(encoding="utf-8")
 
     def code_tpl_for(self, lang: str) -> str:
@@ -41,24 +40,17 @@ class _SafeDict(dict):
 
 
 def _escape_code_html(s: str) -> str:
-    # Order matters: & first, then < and >
+    # Only used for bash code payloads
     return s.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
 
 
 def _replace_full_line_placeholder_no_newline_consume(template: str, key: str, payload: str) -> str:
     """
     Replace a line consisting solely of indentation + {key} + optional spaces,
-    but DO NOT consume the line break. This keeps the template's newline,
-    so we don't introduce an extra blank line inside <pre>.
+    but DO NOT consume the template's newline. This avoids extra blank lines inside <pre>.
     """
-    # Match a full line but stop before the newline (do not include it)
     pat = re.compile(rf'^([ \t]*)\{{{re.escape(key)}\}}[ \t]*$', re.MULTILINE)
-
-    def sub_line(m: re.Match) -> str:
-        # We discard any indentation on the placeholder line and insert payload flush-left.
-        return payload
-
-    return pat.sub(sub_line, template)
+    return pat.sub(lambda m: payload, template)
 
 
 def _pre_sensitive_indent(value: str, indent: str) -> str:
@@ -103,7 +95,6 @@ def indent_aware_format(template: str, mapping: Dict[str, str]) -> str:
             indent, key = m.group(1), m.group(2)
             if key in mapping:
                 val = mapping[key]
-                # For big content blocks, ensure <pre> sections stay leftmost
                 if key in ("body", "pages_html"):
                     out.append(_pre_sensitive_indent(val, indent))
                 else:
@@ -117,15 +108,16 @@ def indent_aware_format(template: str, mapping: Dict[str, str]) -> str:
 
 
 # ====================================================================
-# Element renderers
+# Element renderers  (ONLY bash code escapes; others are raw)
 # ====================================================================
 def render_paragraph(tpl: str, lines: List[str]) -> str:
+    # Inject raw (no escaping)
     text = " ".join(line.strip() for line in lines if line.strip())
-    return tpl.replace("{text}", html.escape(text))
+    return tpl.replace("{text}", text)
 
 
 def render_list(tpl: str, lines: List[str]) -> str:
-    # lines are already <li>…</li> — inject as-is
+    # Lines are already <li>...</li> — inject as-is
     items = "\n".join(lines).rstrip()
     return tpl.replace("{items}", items)
 
@@ -147,7 +139,7 @@ def _align_pre_left(s: str) -> str:
 
 
 def render_code(code_tpl: str, code_lines: List[str]) -> str:
-    # Escape &, <, >
+    # Escape &, <, > ONLY for code
     code_raw = "\n".join(code_lines).rstrip()
     code_html = _escape_code_html(code_raw)
     # Replace {code} without consuming the newline in the template
@@ -157,10 +149,11 @@ def render_code(code_tpl: str, code_lines: List[str]) -> str:
 
 
 def render_input(tpl: str, input_id: str, lines: List[str]) -> str:
+    # Inject raw (no escaping). NOTE: quotes or < > in placeholder will be literal.
     placeholder = " ".join(line.strip() for line in lines if line.strip())
     return (tpl
-            .replace("{id}", html.escape(input_id))
-            .replace("{placeholder}", html.escape(placeholder or input_id)))
+            .replace("{id}", input_id)
+            .replace("{placeholder}", placeholder or input_id))
 
 
 # ====================================================================
@@ -283,9 +276,10 @@ def assemble_html(tpl: Templates, pages: List[Dict], site_title: str) -> str:
             else:
                 raise RuntimeError(f"Unknown element kind: {k}")
 
+        # NOTE: title injected raw (not escaped)
         page_html = indent_aware_format(tpl.page, {
             "format_attr": "",
-            "title": html.escape(p["title"]),
+            "title": p["title"],
             "prev_attrs": prev_attrs,
             "next_attrs": next_attrs,
             "body": "\n".join(body_parts),
@@ -296,8 +290,9 @@ def assemble_html(tpl: Templates, pages: List[Dict], site_title: str) -> str:
     if not pages_html.endswith("\n"):
         pages_html += "\n"  # ensure the script tag in the shell sits on its own line
 
+    # site_title injected raw (not escaped)
     return indent_aware_format(tpl.shell, {
-        "title": html.escape(site_title),
+        "title": site_title,
         "pages_html": pages_html,
     })
 
@@ -314,6 +309,7 @@ def main():
     tpl = Templates(tpldir)
     tgt_root.mkdir(parents=True, exist_ok=True)
 
+    # Recurse through source; mirror directory tree in target
     for src in sorted(src_root.rglob("*.txt")):
         pages = parse_source(src)
         title = pages[0]["title"] if pages and pages[0]["title"] else src.stem
