@@ -113,7 +113,7 @@ lsblk -d
 @ paragraph
 The biggest one is usually going to be the HDD device. Type its name below once you've identified it:
 
-@ input (xxx)
+@ input field (xxx)
 Name of your HDD device (e.g. "sda", "sdb", etc.)
 
 ===============================

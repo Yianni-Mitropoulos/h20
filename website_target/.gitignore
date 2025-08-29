@@ -1,0 +1,6 @@
+# Ignore every HTML file and Debian package file by default
+*.html
+*.deb
+
+# Whitelist specific files
+!home.html
