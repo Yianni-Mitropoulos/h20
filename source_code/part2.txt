@@ -124,7 +124,13 @@ Name of your HDD device (e.g. "sda", "sdb", etc.)
 <strong>Warning:</strong> don't perform the next step unless the disk is empty. If it's not empty, you need to move the data you want elsewhere, in which case you should also consider wiping the disk before proceeding, to improve your overall privacy posture. Consult with AI if you're not sure.
 
 @ paragraph
-Start by creating a physical volume backed by the device.
+Start off by wiping the file system:
+
+@ bash
+sudo wipefs -a /dev/sdxxx
+
+@ paragraph
+Now create a physical volume backed by the newly wiped device.
 
 @ bash
 sudo pvcreate /dev/sdxxx
@@ -139,16 +145,16 @@ sudo vgcreate qubes_sdxxx /dev/sdxxx
 Now create a logical volume from that:
 
 @ bash
-sudo lvcreate -T qubes_sdxxx/pool --size 100%FREE
+sudo lvcreate -T qubes_sdxxx/pool -l 100%FREE
 
 @ paragraph
 We'll now make a Qubes storage pool backed by that:
 
 @ bash
-qvm-pool add sdxxx-pool lvm_thin -o volume_group=qubes_sdxxx -o thin_pool=pool
+qvm-pool add vm-pool-hdd lvm_thin -o volume_group=qubes_sdxxx -o thin_pool=pool
 
 @ paragraph
 Finally, we'll register that that as the default Qubes storage pool for every home directory:
 
 @ bash
-qubes-prefs default_pool_private sdxxx-pool
+qubes-prefs default_pool_private vm-pool-hdd

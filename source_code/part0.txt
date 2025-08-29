@@ -6,7 +6,7 @@
 Welcome to the Hero to Zero guide to personal computing!
 
 @ paragraph
-By following this guide, you'll gain a level of security, privacy, and data deniability that most experts consider unattainable for the average user.
+By following this guide, you'll gain a level of security (etc.) that most experts consider unattainable for the average user.
 
 @ paragraph
 As usual, Hero to Zero does not condone criminality. Your first line of defense against institutional overreach is to follow the law, and do the right thing.
@@ -16,6 +16,20 @@ Some basic Linux knowledge will be helpful, but isn't essential.
 
 @ paragraph
 If in doubt, you can discuss unfamiliar terms with an AI Chatbot. I recommend Proton Lumo.
+
+================================
+=== Overview of SSecPPrideRR ===
+================================
+
+@ ordered list
+<li> Searchability.  The file you're after should be easy to find, especially via search. </li>
+<li> Security.       System compromise should be extremely difficult. </li>
+<li> Provability.    The fact that a file was last edited on a particular day should be provable. </li>
+<li> Privacy.        Minimal data and metadata leaks out to third parties. </li>
+<li> Deniability.    Whether or not we're in possession of a file should be unclear to anyone but you. </li>
+<li> Deletability.   Deleted data should be fundamentally gone, not just invisible. </li>
+<li> Reliability.    The system keeps working reliably without breaking. </li>
+<li> Recoverability. You files are backed up remotely and recoverable if things go wrong. </li>
 
 ===========================================
 === Hardware Vulnerabilities: Key Facts ===
@@ -73,7 +87,7 @@ Be comprehensive, but brief. Answer in dot points.
 <strong>Supply Chain Attacks<strong> A supplier (of hardware or software) is compromised. This can occur as a result of rogue employees, inappropriate internal company policies, the theft of cryptographic keys by malicious third parties, and compulsion of suppliers by governments and/or judicial institutions.
 
 @ paragraph
-<strong>Transit-Phase Attacks<strong> Hardware or software is compromised in transit. This includes <em>man in the middle</em> (MitM) attacks, which refers to data modification in transit, and <em>interdiction attacks</em>, which refer to malicious attempts to tamper with hardware in transit.
+<strong>Transit-Phase Attacks<strong> Hardware or software is compromised in transit. This includes <em>man in the middle</em> (MitM) attacks, which refers to attacks that rely on modifying data in transit, and <em>interdiction attacks</em>, which refer to malicious attempts to tamper with hardware in transit.
 
 ===================================
 === Buying New Hardware: Step 2 ===
