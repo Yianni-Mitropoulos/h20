@@ -1,0 +1,6 @@
+package_source/cd-local-scripts.sh /usr/bin/h0-cd-local-scripts
+package_source/lob-exclude.sh /usr/bin/h0-lob-exclude
+package_source/lob-include.sh /usr/bin/h0-lob-include
+package_source/lob-status.sh /usr/bin/h0-lob-status
+package_source/root-confer.sh /usr/bin/h0-root-confer
+package_source/root-revoke.sh /usr/bin/h0-root-revoke

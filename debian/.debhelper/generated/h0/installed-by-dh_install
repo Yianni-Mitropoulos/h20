@@ -1,0 +1,6 @@
+./package_source/cd-local-scripts.sh
+./package_source/lob-exclude.sh
+./package_source/lob-include.sh
+./package_source/lob-status.sh
+./package_source/root-confer.sh
+./package_source/root-revoke.sh
