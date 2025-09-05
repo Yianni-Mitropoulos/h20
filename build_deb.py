@@ -164,8 +164,8 @@ def main():
     parser = argparse.ArgumentParser(description="Package scripts/*.sh into h0.deb exposing h0-<name> commands.")
     parser.add_argument("--version", default="1.0.0", help="Package version (default: 1.0.0)")
     parser.add_argument("--package", default="h0", help="Debian package name (default: h0)")
-    parser.add_argument("--scripts", default="utils_pack_source", help="Scripts directory (default: utils_pack_source)")
-    parser.add_argument("--output", default="website_target/h0.deb", help="Output .deb path (default: website_target/h0.deb)")
+    parser.add_argument("--scripts", default="package_source", help="Scripts directory (default: package_source)")
+    parser.add_argument("--output", default="package_target/h0.deb", help="Output .deb path (default: package_target/h0.deb)")
     parser.add_argument("--prefix", default="/usr/bin", help="Install prefix inside package (default: /usr/bin)")
     args = parser.parse_args()
 
