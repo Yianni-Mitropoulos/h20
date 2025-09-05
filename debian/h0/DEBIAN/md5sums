@@ -1,8 +1,0 @@
-9576d1d4197f976d4c10bccf58f4af99  usr/bin/h0-cd-local-scripts/cd-local-scripts.sh
-1786a3deb6ea711b3303f01a30575595  usr/bin/h0-lob-exclude/lob-exclude.sh
-6abec0fc9bd871b5210c9bda941c2f60  usr/bin/h0-lob-include/lob-include.sh
-5c5a18e4955df157735cfafbe3f93564  usr/bin/h0-lob-status/lob-status.sh
-353fd6d394219cfdc637eee7406d510d  usr/bin/h0-root-confer/root-confer.sh
-b9e96c49e99da30c2ace70149724643c  usr/bin/h0-root-revoke/root-revoke.sh
-0e863fc3e532af941bc042fcda067a4a  usr/share/doc/h0/changelog.Debian.gz
-c7b4a1d83740835ecadf9d9a49e79df2  usr/share/doc/h0/copyright
