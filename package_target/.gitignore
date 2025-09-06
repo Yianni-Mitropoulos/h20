@@ -1,0 +1,3 @@
+# Ignore every file in here except this .gitignore file
+*
+!.gitignore
