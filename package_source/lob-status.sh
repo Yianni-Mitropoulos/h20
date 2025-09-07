@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# h20-lob-status: check whether /usr/local.orig/bin is in /etc/profile.d/ and thus in PATH system-wide
+# h0-lob-status: check whether /usr/local.orig/bin is in /etc/profile.d/ and thus in PATH system-wide
 
 set -euo pipefail
 TARGET="/usr/local.orig/bin"

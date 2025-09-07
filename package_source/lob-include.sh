@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# h20-lob-include: add /usr/local.orig/bin to /etc/profile.d/ and thus to PATH system-wide
+# h0-lob-include: add /usr/local.orig/bin to /etc/profile.d/ and thus to PATH system-wide
 
 set -euo pipefail
 TARGET="/usr/local.orig/bin"

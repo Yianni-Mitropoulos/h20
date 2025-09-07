@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# h20-lob-exclude: remove /usr/local.orig/bin from /etc/profile.d/
+# h0-lob-exclude: remove /usr/local.orig/bin from /etc/profile.d/
 
 set -euo pipefail
 PROFILED_FILE="/etc/profile.d/local-orig.sh"
