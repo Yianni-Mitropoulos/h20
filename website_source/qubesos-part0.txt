@@ -40,35 +40,36 @@ All of the above can and have been used to bypass protections, often leading to 
 ===================================
 
 @ paragraph
-To mitigate the aforementioned issues, you should talk to a knowledgeable agent (like an AI Chatbot, or trusted advisor) before purchasing new hardware. The following prompt can be helpful.
+To mitigate the aforementioned issues, chat to a knowledgeable entity (like an AI Chatbot, or trusted advisor) before purchasing new hardware. The following AI prompt can be helpful.
 
 @ bash
 I'm interested in buying [type of hardware, e.g., webcam, tablet, SSD, HDD, etc.].
-Can you help me evaluate the security and privacy risks,
-and recommend some brands and options?
+Help me evaluate the security and privacy risks, and recommend some brands and options.
 
 Please consider:
 0. Performance, durability, and cost
 1. Possible vulnerabilities at the hardware, firmware, and Linux drivers
 2. The availability of open source options (including open-source hardware, firmware, and drivers)
 3. The recent CVE history (last 5 years)
-4. The risks of data linger and how to mitigate it
-5. Compatibility of the hardware with Debian Linux and QubesOS
-6. Any known backdoors and/or vendor-specific concerns
-7. Jurisdictional risk, including risks from misbehaving actors at the state and corporate level
+4. Compatibility with Debian Linux and especially QubesOS
+5. Any known backdoors and/or vendor-specific concerns
+6. Jurisdictional risk, including risks from misbehaving actors at the state and corporate level
 
-I strongly prefer off-the-shelf, consumer-grade hardware
-that I can find at ordinary computer hardware shops.
-
+I prefer off-the-shelf hardware that I can find at ordinary computer shops.
 Give concrete recommendations, not just big-picture stuff.
-Be comprehensive, systematic, and brief. Cover all the main issues.
+Be comprehensive, systematic, and brief.
+Include your conclusions and concerns about QubesOS compatibility in your report.
+Cover all the main issues, and alert me to any issues I may not have thought of.
 
 ===================================
 === Two Attacks To Keep In Mind ===
 ===================================
 
 @ paragraph
-<strong>Supply Chain Attacks</strong> A supplier (of hardware or software) is compromised. This can occur as a result of:
+<strong>Supply Chain Attacks</strong>
+
+@ paragraph
+A supplier (of hardware or software) is compromised. This can occur as a result of:
 
 @ unordered list
 <li>misbehaving employees,</li>
@@ -77,33 +78,57 @@ Be comprehensive, systematic, and brief. Cover all the main issues.
 <li>compulsion by governments and/or judiciaries</li>
 
 @ paragraph
-<strong>Transit-Phase Attacks</strong> Hardware or software is compromised in transit. This includes <em>man in the middle</em> (MitM) attacks, which refers to attacks that rely on modifying data in transit, and <em>interdiction attacks</em>, which refer to malicious attempts to tamper with hardware in transit.
+<strong>Transit-Phase Attacks</strong>
+
+@ paragraph
+Hardware or software is compromised in transit. This includes <em>man in the middle</em> (MitM) attacks, which refers to attacks that rely on modifying data in transit, and <em>interdiction attacks</em>, which refer to malicious attempts to tamper with hardware in transit.
 
 ===================================
 === Buying New Hardware: Step 2 ===
 ===================================
 
 @ paragraph
-For some people following this guide, security is just a hobby. For others, it's life or death. Depending therefore on your threat model, interdiction attacks may or may not pose a meaningful risk.
+Depending on your threat model, interdiction attacks may or may not pose a meaningful risk.
 
 @ paragraph
 If you're seeking to control this attack vector, try to avoid online purchases as far as possible. Buy off-the-shelf parts at a physical store. You can use Tor Browser to identify nearby hardware shops, and then randomize between them. Don't call up the store before you arrive. Leave your phone at home, with Airplane Mode deactivated to mislead anyone trying to track you. Pay with cash that you withdrew in small increments over multiple months.
 
 @ paragraph
-Of course, for many users, targeted interdiction attacks aren't a meaningful risk. Make up your own mind based on your own circumstances.
+Of course, for many users, this isn't a meaningful risk. Make up your own mind based on your own circumstances.
 
-============================
-=== Hardware for QubesOS ===
-============================
-
-@ paragraph
-You'll need a reasonably powerful personal computer to be able to use Qubes comfortably and securely.
+=======================
+=== Buyer's Remorse ===
+=======================
 
 @ paragraph
-If you're going out to buy a new desktop computer for this purpose, here's a quick checklist of what to look for. There's a lot of technical jargon below, but don't worry, I talk it all out in subsequent sections.
+You'll need a reasonably powerful personal computer to be able to use Qubes comfortably. If you try to run it on a computer that's quite old, QubesOS will probably feel sluggish. This makes it more likely that you'll give up and go back to your old habits.
 
 @ paragraph
-For the CPU and motherboard, choose AMD and avoid Intel. Additionally, ensure the motherboard:
+Even if you're not buying a new computer outright, you'll nevertheless still end up purchasing some new hardware, with decently high probability. The main reasons for this are that QubesOS:
+
+@ unordered list
+<li>Likes to own entire disks (including both SSDs and HDDs)</li>
+<li>Hates any and all USB devices</li>
+
+@ paragraph
+So, to help you avoid buyer's remorse, here's a quick checklist of what to look for.
+
+==========================
+=== Hardware Checklist ===
+==========================
+
+@ paragraph
+For new CPUs and motherboards, prefer AMD, and avoid Intel (due to NIC-attached coprocessor) unless you know what you're doing. You should also avoid ARM (as it's currently incompatibile with QubesOS).
+
+@ paragraph
+Ensure the AMD CPU:
+
+@ unordered list
+<li>RAM scrambling (I'm talking about address scrambling, not XOR-based encryption)</li>
+<li>RAM encryption via AES-XTS</li>
+
+@ paragraph
+Ensure the motherboard:
 
 @ unordered list
 <li>Has a PS/2 socket for the keyboard.</li>
@@ -111,14 +136,22 @@ For the CPU and motherboard, choose AMD and avoid Intel. Additionally, ensure th
 <li>Has at least 2 USB controllers (it's not enough to have at least 2 USB sockets).</li>
 
 @ paragraph
+When buying RAM, ensure:
+<li>It's ECC.</li>
+<li>It provides good TRR or PARA, ideally with an independent audit.</li>
+
+@ paragraph
 You'll also want:
 
 @ unordered list
 <li>A wired keyboard with a PS/2 keyboard plug.</li>
 <li>A wired USB mouse.</li>
-<li>High-quality RAM with TRR and ECC.</li>
 <li>An NVMe SSD where you'll install QubesOS.</li>
 <li>An HDD where you'll keep most of your user data.</li>
+
+======================
+=== Into the Weeds ===
+======================
 
 @ paragraph
 I'll now explain the importance of each of the above, focusing on their impact on your overall security posture.
