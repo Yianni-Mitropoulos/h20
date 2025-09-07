@@ -6,30 +6,16 @@
 Welcome to the Hero to Zero guide to personal computing!
 
 @ paragraph
-By following this guide, you'll gain a level of security (etc.) that most experts consider unattainable for the average user.
+By following this guide, you'll gain a level of SSecPPrideRR that most experts consider unattainable for the average user.
 
 @ paragraph
-As usual, Hero to Zero does not condone criminality. Your first line of defense against institutional overreach is to follow the law, and do the right thing.
+As usual, Hero to Zero does not condone criminality. Your first line of defense against institutional overreach is to know your legal obligations, and respect them.
 
 @ paragraph
 Some basic Linux knowledge will be helpful, but isn't essential.
 
 @ paragraph
 If in doubt, you can discuss unfamiliar terms with an AI Chatbot. I recommend Proton Lumo.
-
-================================
-=== Overview of SSecPPrideRR ===
-================================
-
-@ ordered list
-<li> Searchability.  The file you're after should be easy to find, especially via search. </li>
-<li> Security.       System compromise should be extremely difficult. </li>
-<li> Provability.    The fact that a file was last edited on a particular day should be provable. </li>
-<li> Privacy.        Minimal data and metadata leaks out to third parties. </li>
-<li> Deniability.    Whether or not we're in possession of a file should be unclear to anyone but you. </li>
-<li> Deletability.   Deleted data should be fundamentally gone, not just invisible. </li>
-<li> Reliability.    The system keeps working reliably without breaking. </li>
-<li> Recoverability. You files are backed up remotely and recoverable if things go wrong. </li>
 
 ===========================================
 === Hardware Vulnerabilities: Key Facts ===
@@ -39,23 +25,15 @@ If in doubt, you can discuss unfamiliar terms with an AI Chatbot. I recommend Pr
 All hardware has vulnerabilities.
 
 @ paragraph
-Attacks may rely on:
+Attacks may rely on bugs and backdoors in the:
 
 @ unordered list
-<li>Underlying issues with the physical hardware</li>
-<li>Firmware-level bugs and backdoors</li>
-<li>Driver-level bugs and backdoors</li>
+<li>Physical hardware</li>
+<li>Firmware</li>
+<li>Drivers</li>
 
 @ paragraph
-Other issues include:
-
-@ unordered list
-<li>Data linger</li>
-<li>Incompatibility with secure software, like QubesOS</li>
-<li>Incompatibility with secure workflows, like the Hero to Zero standard workflow</li>
-
-@ paragraph
-All of the above can and have been used to bypass protections, often leading to full compromise of the affected system, and/or exposure of sensitive data.
+All of the above can and have been used to bypass protections, often leading to full compromise of the affected system.
 
 ===================================
 === Buying New Hardware: Step 1 ===
@@ -65,26 +43,38 @@ All of the above can and have been used to bypass protections, often leading to 
 To mitigate the aforementioned issues, you should talk to a knowledgeable agent (like an AI Chatbot, or trusted advisor) before purchasing new hardware. The following prompt can be helpful.
 
 @ bash
-I'm interested in buying [type of hardware, e.g., webcam, tablet, SSD, HDD, etc.]. Can you help me evaluate the security and privacy risks, and recommend some brands and options? Please consider:
-0. Performance and cost effectiveness
-1. Possible vulnerabilities at the hardware, firmware, and driver levels
-2. The availability of open source options
-3. CVE history
-4. Risks of data linger and how to mitigate it
-5. Compatibility with Debian Linux and QubesOS
-6. Any known backdoors or vendor-specific concerns
+I'm interested in buying [type of hardware, e.g., webcam, tablet, SSD, HDD, etc.].
+Can you help me evaluate the security and privacy risks,
+and recommend some brands and options?
+
+Please consider:
+0. Performance, durability, and cost
+1. Possible vulnerabilities at the hardware, firmware, and Linux drivers
+2. The availability of open source options (including open-source hardware, firmware, and drivers)
+3. The recent CVE history (last 5 years)
+4. The risks of data linger and how to mitigate it
+5. Compatibility of the hardware with Debian Linux and QubesOS
+6. Any known backdoors and/or vendor-specific concerns
 7. Jurisdictional risk, including risks from misbehaving actors at the state and corporate level
-8. The main hardware vulnerabilities in the domain, and the extent to which your recommendations mitigate them effectively
-I strongly prefer off-the-shelf consumer-grade hardware that I can find at ordinary computer hardware shops.
+
+I strongly prefer off-the-shelf, consumer-grade hardware
+that I can find at ordinary computer hardware shops.
+
 Give concrete recommendations, not just big-picture stuff.
-Be comprehensive, but brief. Answer in dot points.
+Be comprehensive, systematic, and brief. Cover all the main issues.
 
 ===================================
 === Two Attacks To Keep In Mind ===
 ===================================
 
 @ paragraph
-<strong>Supply Chain Attacks</strong> A supplier (of hardware or software) is compromised. This can occur as a result of rogue employees, inappropriate internal company policies, the theft of cryptographic keys by malicious third parties, and compulsion of suppliers by governments and/or judicial institutions.
+<strong>Supply Chain Attacks</strong> A supplier (of hardware or software) is compromised. This can occur as a result of:
+
+@ unordered list
+<li>misbehaving employees,</li>
+<li>inappropriate internal policies,</li>
+<li>theft of cryptographic keys by third parties,</li>
+<li>compulsion by governments and/or judiciaries</li>
 
 @ paragraph
 <strong>Transit-Phase Attacks</strong> Hardware or software is compromised in transit. This includes <em>man in the middle</em> (MitM) attacks, which refers to attacks that rely on modifying data in transit, and <em>interdiction attacks</em>, which refer to malicious attempts to tamper with hardware in transit.
@@ -97,7 +87,7 @@ Be comprehensive, but brief. Answer in dot points.
 For some people following this guide, security is just a hobby. For others, it's life or death. Depending therefore on your threat model, interdiction attacks may or may not pose a meaningful risk.
 
 @ paragraph
-If you're seeking to control this attack vector, try to avoid online purchases as far as possible. Buy off-the-shelf parts at a physical store. You can use Tor Browser to identify nearby hardware shops, and then randomize between them. Don't call up the store before you arrive. Leave your phone at home, with Airplane Mode deactivated. Pay with cash. Refuse to provide any identifying details if permitted by law.
+If you're seeking to control this attack vector, try to avoid online purchases as far as possible. Buy off-the-shelf parts at a physical store. You can use Tor Browser to identify nearby hardware shops, and then randomize between them. Don't call up the store before you arrive. Leave your phone at home, with Airplane Mode deactivated to mislead anyone trying to track you. Pay with cash that you withdrew in small increments over multiple months.
 
 @ paragraph
 Of course, for many users, targeted interdiction attacks aren't a meaningful risk. Make up your own mind based on your own circumstances.
@@ -110,15 +100,15 @@ Of course, for many users, targeted interdiction attacks aren't a meaningful ris
 You'll need a reasonably powerful personal computer to be able to use Qubes comfortably and securely.
 
 @ paragraph
-If you're going out to buy a new desktop computer for this purpose, here's a quick checklist of what to look for. There's a lot of technical jargon below, but don't worry, I talk it out in subsequent sections.
+If you're going out to buy a new desktop computer for this purpose, here's a quick checklist of what to look for. There's a lot of technical jargon below, but don't worry, I talk it all out in subsequent sections.
 
 @ paragraph
-The CPU and motherboard should ideally be AMD, not Intel. This is to mitigate the risks posed by the Intel Management Engine, which can sniff incoming packets before the CPU ever gets to see them (the AMD architecture doesn't allow this). Additionally, ensure the motherboard:
+For the CPU and motherboard, choose AMD and avoid Intel. Additionally, ensure the motherboard:
 
 @ unordered list
 <li>Has a PS/2 socket for the keyboard.</li>
 <li>Has a 3.5 mm (⅛-inch) TRS jack for audio.</li>
-<li>Has at least 2 USB controllers (it's not enough to have at least 2 USB plugs).</li>
+<li>Has at least 2 USB controllers (it's not enough to have at least 2 USB sockets).</li>
 
 @ paragraph
 You'll also want:
@@ -126,8 +116,8 @@ You'll also want:
 @ unordered list
 <li>A wired keyboard with a PS/2 keyboard plug.</li>
 <li>A wired USB mouse.</li>
-<li>RAM with TRR and ECC.</li>
-<li>An NVMe SSD where you'll install Qubes.</li>
+<li>High-quality RAM with TRR and ECC.</li>
+<li>An NVMe SSD where you'll install QubesOS.</li>
 <li>An HDD where you'll keep most of your user data.</li>
 
 @ paragraph
@@ -136,24 +126,46 @@ I'll now explain the importance of each of the above, focusing on their impact o
 @ paragraph
 There's a final section for users who either have a laptop, or wish to purchase a laptop.
 
-========================================
-=== USB ===
-========================================
+====================
+=== AMD vs Intel ===
+====================
 
 @ paragraph
+TBD
+
+=========================================
+=== The Benefits of Wired Connections ===
+=========================================
+
+@ paragraph
+TBD
+
+==============================
+=== To USB, or Not To USB? ===
+==============================
+
+@ paragraph
+TBD
+
+==============================
+=== Memory Vulnerabilities ===
+==============================
+
+@ paragraph
+TBD, talk about rowhammer and cold boot.
 
 =======================================
 === Key Facts About Storage Devices ===
 =======================================
 
 @ paragraph
-When buying mass storage devices, our main SecPride concern is deletability.
+When buying mass storage devices, our main SSecPPrideRR concern is deletability.
 
 @ paragraph
-Data linger is a <strong>huge</strong> problem, especially for consumer-grade SSDs, which oftentimes don't respect instructions to delete this or that block. The end result is that files look deleted and unrecoverable from your point of view, but they can nevertheless be reconstructed by someone with the necessary gadgets, if they have somehow obtained your disk encryption key.
+Data linger is a <strong>huge</strong> problem, especially for consumer-grade SSDs. This is because SSDs rely on TRIM instructions for permanent data removal, and unfortunately, most consumer-grade SSDs don't fully respect TRIM instructions. This give you the worst of all possible worlds: files look deleted and unrecoverable from your point of view, but can nevertheless be reconstructed by someone with the necessary gadgets, if they have somehow obtained your disk encryption key.
 
 @ paragraph
-To mitigate this, it's a good idea to have an HDD attached to your system, and to build a workflow that ensures user data is only ever stored on the HDD. Combined with appropriate plausible deniability tools, this usually results in an overall strong SecPride posture, as compared with SSD alone.
+To mitigate this, it's a good idea to have at least one HDD attached to your system. The idea is to build a workflow that ensures user data is never stored on the SSD. Combined with appropriate plausible deniability tools, this results in an overall strong SSecPPrideRR posture, as compared with what's possible using SSD-only systems.
 
 ========================
 === For Laptop Users ===

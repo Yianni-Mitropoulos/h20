@@ -3,4 +3,5 @@
 *.deb
 
 # Whitelist specific files
-!home.html
+!index.html
+!qubesos.html
