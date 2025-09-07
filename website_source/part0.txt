@@ -84,10 +84,10 @@ Be comprehensive, but brief. Answer in dot points.
 ===================================
 
 @ paragraph
-<strong>Supply Chain Attacks<strong> A supplier (of hardware or software) is compromised. This can occur as a result of rogue employees, inappropriate internal company policies, the theft of cryptographic keys by malicious third parties, and compulsion of suppliers by governments and/or judicial institutions.
+<strong>Supply Chain Attacks</strong> A supplier (of hardware or software) is compromised. This can occur as a result of rogue employees, inappropriate internal company policies, the theft of cryptographic keys by malicious third parties, and compulsion of suppliers by governments and/or judicial institutions.
 
 @ paragraph
-<strong>Transit-Phase Attacks<strong> Hardware or software is compromised in transit. This includes <em>man in the middle</em> (MitM) attacks, which refers to attacks that rely on modifying data in transit, and <em>interdiction attacks</em>, which refer to malicious attempts to tamper with hardware in transit.
+<strong>Transit-Phase Attacks</strong> Hardware or software is compromised in transit. This includes <em>man in the middle</em> (MitM) attacks, which refers to attacks that rely on modifying data in transit, and <em>interdiction attacks</em>, which refer to malicious attempts to tamper with hardware in transit.
 
 ===================================
 === Buying New Hardware: Step 2 ===

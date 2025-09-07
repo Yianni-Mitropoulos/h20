@@ -1,0 +1,110 @@
+/* Global styles */
+body {
+    font-family: Arial, sans-serif;
+    background-color: #1e1e1e;
+    color: white;
+    margin: 0;
+    padding: 20px;
+}
+
+h2, h3 {
+    margin: 0;
+}
+
+/* Page container */
+.page {
+    display: none;
+}
+.active-page {
+    display: block;
+}
+
+/* Page header (title + buttons) */
+.page-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 20px;
+}
+
+.page-header h2, .page-header h3 {
+    margin: 0;
+}
+
+.button-container {
+    display: flex;
+    gap: 10px;
+}
+
+/* Buttons */
+button {
+    padding: 10px 20px;
+    background-color: #007bff;
+    color: white;
+    border: none;
+    border-radius: 5px;
+    cursor: pointer;
+    font-size: 16px;
+    min-width: 120px;
+}
+
+button:hover {
+    background-color: #0056b3;
+}
+
+button:active {
+    background-color: #004085;
+}
+
+/* Input field */
+input[type="text"] {
+    padding: 10px;
+    background-color: #333;
+    border: 1px solid #555;
+    border-radius: 5px;
+    color: white;
+    font-size: 16px;
+    width: 50%;
+    margin-top: 10px;
+    max-width: 500px;
+}
+
+input[type="text"]::placeholder {
+    color: #bbb;
+}
+
+/* Bash script box */
+.bash-script-box {
+    position: relative;
+    background-color: #2d2d2d;
+    padding: 15px;
+    border-radius: 5px;
+    overflow-x: auto;
+    margin-top: 10px;
+    color: white;
+}
+
+.bash-script-box pre {
+    margin: 0;
+    padding: 0;
+    font-size: 14px;
+    font-family: 'Courier New', Courier, monospace;
+}
+
+/* Copy button */
+.copy-btn {
+    position: absolute;
+    top: 10px;
+    right: 10px;
+    padding: 10px 20px;
+    background-color: #28a745;
+    color: white;
+    border: none;
+    border-radius: 5px;
+    cursor: pointer;
+    min-width: 120px;
+}
+
+.copy-btn:hover {
+    background-color: #006400; /* Dark green for hover effect */
+}
