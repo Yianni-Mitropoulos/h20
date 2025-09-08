@@ -18,6 +18,7 @@ class Templates:
         self.tpl_olist = (base / "element_ordered_list.html").read_text(encoding="utf-8")
         self.tpl_ulist = (base / "element_unordered_list.html").read_text(encoding="utf-8")
         self.tpl_input = (base / "element_input_field.html").read_text(encoding="utf-8")
+        self.tpl_heading = (base / "element_heading.html").read_text(encoding="utf-8")  # NEW
 
         # Code (language-specific) — only bash is needed
         self.tpl_bash = (base / "element_bash.html").read_text(encoding="utf-8")
@@ -116,6 +117,11 @@ def render_paragraph(tpl: str, lines: List[str]) -> str:
     return tpl.replace("{text}", text)
 
 
+def render_heading(tpl: str, lines: List[str]) -> str:  # NEW
+    text = " ".join(line.strip() for line in lines if line.strip())
+    return tpl.replace("{text}", text)
+
+
 def render_list(tpl: str, lines: List[str]) -> str:
     # Lines are already <li>...</li> — inject as-is
     items = "\n".join(lines).rstrip()
@@ -164,6 +170,7 @@ RE_PAGE_TITLE   = re.compile(r"^\s*===\s*(.*?)\s*===\s*$")
 RE_ELEM_HEADER  = re.compile(r"^\s*@\s*(.+?)\s*$", re.I)
 RE_INPUT_HDR    = re.compile(r"^\s*input\s+field\s*\(\s*([^)]+)\s*\)\s*$", re.I)
 RE_PARA_HDR     = re.compile(r"^\s*paragraph\s*$", re.I)
+RE_HEADING_HDR  = re.compile(r"^\s*heading\s*$", re.I)  # NEW
 RE_OLIST_HDR    = re.compile(r"^\s*ordered\s+list\s*$", re.I)
 RE_ULIST_HDR    = re.compile(r"^\s*unordered\s+list\s*$", re.I)
 RE_LANG_HDR     = re.compile(r"^\s*([A-Za-z0-9_-]+)\s*$")  # e.g., bash
@@ -176,6 +183,8 @@ def parse_source(path: Path) -> List[Dict]:
       - '='-only lines ignored.
       - Page title: '=== Title ==='
       - No implicit element: content before @-header => error.
+      - Special: the very first line of the file is NOT seen by the parser,
+        unless it begins with '=' (e.g., a '=== Page ===' title).
     """
     pages: List[Dict] = []
     current_page: Optional[Dict] = None
@@ -191,8 +200,17 @@ def parse_source(path: Path) -> List[Dict]:
         current_el = None
 
     with path.open(encoding="utf-8") as f:
+        first_line_handled = False
         for idx, raw in enumerate(f, start=1):
             line = raw.rstrip("\n\r")
+
+            # Skip the first physical line *unless* it starts with '='
+            if not first_line_handled:
+                first_line_handled = True
+                if not line.lstrip().startswith("="):
+                    # Hidden from parser; continue to next line without processing
+                    continue
+                # else: fall through so '=...' (including '=== Title ===') is parsed
 
             if RE_EQ_ONLY.match(line):
                 continue
@@ -214,6 +232,8 @@ def parse_source(path: Path) -> List[Dict]:
 
                 if RE_PARA_HDR.match(spec):
                     current_el = {"kind": "paragraph", "param": None, "lines": []}
+                elif RE_HEADING_HDR.match(spec):  # NEW
+                    current_el = {"kind": "heading", "param": None, "lines": []}
                 elif RE_OLIST_HDR.match(spec):
                     current_el = {"kind": "olist", "param": None, "lines": []}
                 elif RE_ULIST_HDR.match(spec):
@@ -264,6 +284,8 @@ def assemble_html(tpl: Templates, pages: List[Dict], site_title: str) -> str:
             k = el["kind"]
             if k == "paragraph":
                 body_parts.append(render_paragraph(tpl.tpl_paragraph, el["lines"]))
+            elif k == "heading":  # NEW
+                body_parts.append(render_heading(tpl.tpl_heading, el["lines"]))
             elif k == "olist":
                 body_parts.append(render_list(tpl.tpl_olist, el["lines"]))
             elif k == "ulist":
@@ -311,9 +333,24 @@ def main():
 
     # Recurse through source; mirror directory tree in target
     for src in sorted(src_root.rglob("*.txt")):
+        # Determine site title from the first line of the file
+        try:
+            with src.open(encoding="utf-8") as fh:
+                first_line = fh.readline()
+        except FileNotFoundError:
+            continue
+
+        if first_line is None:
+            site_title = "Untitled"
+        else:
+            s = first_line.rstrip("\n\r")
+            if (not s.strip()) or s.lstrip().startswith("="):
+                site_title = "Untitled"
+            else:
+                site_title = s.strip()
+
         pages = parse_source(src)
-        title = pages[0]["title"] if pages and pages[0]["title"] else src.stem
-        html_out = assemble_html(tpl, pages, site_title=title)
+        html_out = assemble_html(tpl, pages, site_title=site_title)
 
         rel = src.relative_to(src_root)
         out_path = tgt_root / rel.with_suffix(".html")

@@ -1,3 +1,5 @@
+Selecting Hardware
+
 ================
 === Welcome! ===
 ================

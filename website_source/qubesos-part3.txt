@@ -1,1 +1,135 @@
-Test Heading
+Forging The First Qube
+
+============
+=== Goal ===
+============
+
+@ paragraph
+This guide will help you configure a hardened Debian template within QubesOS.
+
+=============================
+=== Choose Debian Version ===
+=============================
+
+@ paragraph
+What version of Debian would you like to target? The latest is 13.
+
+@ input field(XX)
+Enter your preferred version of Debian, e.g. 13
+
+==========================================
+=== Download A Minimal Debian Template ===
+==========================================
+
+@ paragraph
+To get started, open a <code>dom0</code> terminal.
+
+@ paragraph
+Now go ahead and download the minimal Debian template, by running the following command.
+
+@ bash
+qubes-dom0-update qubes-template-debian-XX-minimal
+
+==========================
+=== Clone The Template ===
+==========================
+
+@ paragraph
+To avoid contaminating the base template, we'll now create a clone called <code>dXX</code>. This will serve as the basis of most of our virtual machines.
+
+@ bash
+qvm-clone debian-XX-minimal dXX
+
+========================================
+=== Open A Root-User Terminal in dXX ===
+========================================
+
+@ paragraph
+There's little point in opening a terminal in <code>dXX</code> from the Q menu, as you won't have root permissions.
+
+@ paragraph
+Instead, you should run the following command, which opens a terminal in <code>dXX</code> as the root user.
+
+@ bash
+qvm-run -u root dXX xterm
+
+======================================
+=== The History of <code>h0</code> ===
+======================================
+
+@ paragraph
+Early versions of this guide involved a whole lot of copying and pasting. Scripts were copied from this website and pasted into the terminal.
+
+@ paragraph
+Eventually, I decided this wasn't professional enough. The approach is now to distribute this scripts inside a single Debian package called <code>h0</code>. The main benefit of the new approach is it allows the end-user to update their Hero to Zero scripts a lot more easily.
+
+==================================
+=== Configuring Your APT Repos ===
+==================================
+
+@ paragraph
+The following code:
+
+@ unordered list
+<li>removes non-free software from your APT sources </li>
+<li>adds the Hero to Zero APT repository as an APT source</li>
+<li>adds the Hero to Zero GPG repository signing key</li>
+<li>installs <code>h0</code></li>
+
+@ bash
+# Remove contrib, non-free, and non-free-firmware from all APT lists (deb and deb-src)
+for f in /etc/apt/sources.list /etc/apt/sources.list.d/*.list; do
+  [ -e "$f" ] || continue
+  sudo sed -i -E '
+    s/(^deb(-src)?[[:space:]][^#]*[[:space:]])non-free-firmware[[:space:]]?/\1/g;
+    s/(^deb(-src)?[[:space:]][^#]*[[:space:]])non-free[[:space:]]?/\1/g;
+    s/(^deb(-src)?[[:space:]][^#]*[[:space:]])contrib[[:space:]]?/\1/g
+  ' "$f"
+done
+
+# Ensure the keyring directory exists
+sudo install -d -m 0755 /usr/share/keyrings
+
+# Add the Hero-to-Zero repository, bound to our key
+ARCH="$(dpkg --print-architecture)"
+echo "deb [arch=${ARCH} signed-by=/usr/share/keyrings/h0-archive-keyring.gpg] http://hero-to-zero.ch/apt/ {dist}" \
+  | sudo tee /etc/apt/sources.list.d/h0.list >/dev/null
+
+# Embed the ASCII-armored key and dearmor directly (no temp .asc file)
+sudo gpg --dearmor -o /usr/share/keyrings/h0-archive-keyring.gpg <<'EOF'
+{gpg_pub_key}
+EOF
+sudo chmod 0644 /usr/share/keyrings/h0-archive-keyring.gpg
+
+# Update and install
+sudo apt update
+sudo apt install h0
+
+===========================================
+=== Actually, Passwordless Sudo Is Good ===
+===========================================
+
+@ paragraph
+Now for some controversy.
+
+@ paragraph
+The minimal Debian template does not come with passwordless sudo. This means that if you're not acting as root user, you can't really do much to configure the template. This is by design.
+
+@ paragraph
+Many QubesOS experts would advise against installing it, citing an increased blast radius if and when a VM with passwordless sudo is compromised.
+
+@ paragraph
+However: there's no harm in installing it now, for convenience, and then purging it later in those specific qubes where a meaningful security benefit arises from removing it.
+
+@ paragraph
+This also means we don't have to spend the next three hours logged in as root user, reducing the probability that a small error or typo does irreparable harm to one of our templates.
+
+=================================
+=== Install Passwordless Sudo ===
+=================================
+
+@ paragraph
+In your <code>dXX</code> root-user terminal, run the following.
+
+@ bash
+apt install qubes-core-agent-passwordless-root
