@@ -71,7 +71,7 @@ Eventually, I decided this wasn't professional enough. The approach is now to di
 The following code:
 
 @ unordered list
-<li>removes non-free software from your APT sources </li>
+<li>removes non-free software from your APT sources</li>
 <li>adds the Hero to Zero APT repository as an APT source</li>
 <li>adds the Hero to Zero GPG repository signing key</li>
 <li>installs <code>h0</code></li>
@@ -90,14 +90,14 @@ done
 # Ensure the keyring directory exists
 sudo install -d -m 0755 /usr/share/keyrings
 
-# Add the Hero-to-Zero repository, bound to our key
+# Add the Hero-to-Zero repository, bound to our key (flat repo layout)
 ARCH="$(dpkg --print-architecture)"
-echo "deb [arch=${ARCH} signed-by=/usr/share/keyrings/h0-archive-keyring.gpg] http://hero-to-zero.ch/apt/ {dist}" \
+echo "deb [arch=${ARCH} signed-by=/usr/share/keyrings/h0-archive-keyring.gpg] https://hero-to-zero.ch/{suite}/apt ./ " \
   | sudo tee /etc/apt/sources.list.d/h0.list >/dev/null
 
-# Embed the ASCII-armored key and dearmor directly (no temp .asc file)
+# Embed the ASCII-armored public key and dearmor directly (no temp .asc file)
 sudo gpg --dearmor -o /usr/share/keyrings/h0-archive-keyring.gpg <<'EOF'
-{gpg_pub_key}
+{gpg_key_public}
 EOF
 sudo chmod 0644 /usr/share/keyrings/h0-archive-keyring.gpg
 

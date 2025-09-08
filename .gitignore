@@ -1,6 +1,6 @@
 # Build artifacts
 apt_repo/
-deploy_stage/
+signed_website_target/
 
 # Byte-compiled / optimized / DLL files
 __pycache__/

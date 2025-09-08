@@ -6,12 +6,12 @@ import shutil
 import subprocess
 from pathlib import Path
 
-DEFAULT_REMOTE = os.getenv("RCLONE_REMOTE", "hero-to-zero-webserver")
-DEFAULT_WEB_BASE = os.getenv("WEB_BASE_PATH", "/var/www/htdocs")
-DEFAULT_APT_BASE = os.getenv("APT_BASE_PATH", "/var/www/htdocs/apt")
+DEFAULT_REMOTE    = os.getenv("RCLONE_REMOTE", "hero-to-zero-webserver")
+DEFAULT_WEB_FMT   = os.getenv("WEB_BASE_PATH_PATTERN", "/var/www/htdocs/{suite}")
+DEFAULT_APT_FMT   = os.getenv("APT_BASE_PATH_PATTERN", "/var/www/htdocs/{suite}/apt")
 
 def run(cmd, cwd=None):
-    print(f"+ {' '.join(cmd)}")
+    print("+", " ".join(cmd))
     subprocess.run(cmd, cwd=cwd, check=True)
 
 def ensure_exists(path: Path, what: str):
@@ -20,61 +20,73 @@ def ensure_exists(path: Path, what: str):
         sys.exit(1)
 
 def main():
-    parser = argparse.ArgumentParser(description="Build and push website + apt repo via rclone.")
-    parser.add_argument("suite", nargs="?", choices=["stable", "unstable"], default="unstable",
-                        help="Which suite to deploy (default: unstable)")
-    parser.add_argument("--remote", default=DEFAULT_REMOTE, help="rclone remote name")
-    parser.add_argument("--web-base", default=DEFAULT_WEB_BASE, help="remote base path for website")
-    parser.add_argument("--apt-base", default=DEFAULT_APT_BASE, help="remote base path for apt repo")
-    parser.add_argument("--dry-run", action="store_true", help="preview changes only")
-    parser.add_argument("--no-progress", action="store_true", help="omit --progress in rclone")
-    args = parser.parse_args()
+    p = argparse.ArgumentParser(description="Build and push signed website + apt repo via rclone (/{suite}/ and /{suite}/apt).")
+    p.add_argument("suite", nargs="?", choices=["stable","unstable"], default="unstable",
+                   help="Which suite to deploy (default: unstable)")
+    p.add_argument("--remote", default=DEFAULT_REMOTE, help="rclone remote name")
+    p.add_argument("--web-pattern", default=DEFAULT_WEB_FMT,
+                   help="remote dir pattern for website (default: /var/www/htdocs/{suite})")
+    p.add_argument("--apt-pattern", default=DEFAULT_APT_FMT,
+                   help="remote dir pattern for apt repo (default: /var/www/htdocs/{suite}/apt)")
+    p.add_argument("--dry-run", action="store_true", help="preview changes only")
+    p.add_argument("--no-progress", action="store_true", help="omit --progress in rclone")
+    args = p.parse_args()
 
     suite = args.suite
     cwd = Path.cwd()
 
-    # sanity: rclone present
+    # sanity
     if shutil.which("rclone") is None:
         sys.stderr.write("error: rclone not found in PATH\n")
         sys.exit(1)
 
-    # build steps
+    # --- Build pipeline ---
+    # 1) Build unsigned site into website_target/
     run([sys.executable, "./build_website.py"])
+    # 2) Build packages into package_target/ (your existing script)
     run([sys.executable, "./build_deb.py"])
+    # 3) Build flat APT repo into apt_repo/<suite> (signed for both suites)
     run([sys.executable, "./build_apt_repo.py", suite])
+    # 4) Build signed site into signed_website_target/ (uses keys in ./gpg_keys)
+    run([sys.executable, "./build_signed_website.py", suite])
 
-    # local artifacts
-    website_src = cwd / "website_target"
-    apt_src = cwd / "apt_repo" / suite
-    ensure_exists(website_src, "website_target directory")
+    # --- Local artifacts we will upload ---
+    signed_site_src = cwd / "signed_website_target"
+    apt_src         = cwd / "apt_repo" / suite
+    ensure_exists(signed_site_src, "signed_website_target directory")
     ensure_exists(apt_src, f"apt_repo/{suite} directory")
 
     # rclone flags
-    rclone_flags = []
+    rflags = []
     if args.dry_run:
-        rclone_flags.append("--dry-run")
+        rflags.append("--dry-run")
     if not args.no_progress:
-        rclone_flags.append("--progress")
+        rflags.append("--progress")
     # exclude hidden files/dirs
-    rclone_flags += ["--exclude", ".*"]
+    rflags += ["--exclude", ".*"]
 
-    remote_web = f"{args.remote}:{args.web_base.rstrip('/')}/{suite}"
-    remote_apt = f"{args.remote}:{args.apt_base.rstrip('/')}/{suite}"
+    # Remote destinations
+    remote_web_dir = args.web_pattern.format(suite=suite).rstrip("/")
+    remote_apt_dir = args.apt_pattern.format(suite=suite).rstrip("/")
+    remote_web = f"{args.remote}:{remote_web_dir}"
+    remote_apt = f"{args.remote}:{remote_apt_dir}"
 
-    # create dirs (safe if they exist)
+    # Create dirs (idempotent)
     run(["rclone", "mkdir", remote_web])
     run(["rclone", "mkdir", remote_apt])
 
-    # sync website
-    run(["rclone", "sync", str(website_src), remote_web] + rclone_flags)
+    # Sync signed website -> /{suite}/
+    run(["rclone", "sync", str(signed_site_src), remote_web] + rflags)
 
-    # sync apt repo
-    run(["rclone", "sync", str(apt_src), remote_apt] + rclone_flags)
+    # Sync apt repo -> /{suite}/apt/
+    run(["rclone", "sync", str(apt_src), remote_apt] + rflags)
 
     print("\nPush complete.")
-    print(f"Website:  https://hero-to-zero.ch/        (serves {suite})" if suite == "stable" else
-          "Website:  https://hero-to-zero.ch/ (stable) and /unstable/ serves this push")
-    print(f"APT repo: {remote_apt}")
+    print(f"Website URL: https://hero-to-zero.ch/{suite}/")
+    print(f"APT URL:     https://hero-to-zero.ch/{suite}/apt/")
+    print(f"(remote web) {remote_web}")
+    print(f"(remote apt) {remote_apt}")
+    print("\nTip: set a root redirect to /stable/index.html in httpd.conf or with a tiny meta-refresh index.html at the docroot.")
 
 if __name__ == "__main__":
     try:
