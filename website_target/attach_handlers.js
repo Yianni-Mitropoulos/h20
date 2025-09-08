@@ -1,33 +1,21 @@
-// handler_attacher.js
-document.addEventListener('DOMContentLoaded', function () {
-    // Prev
-    document.querySelectorAll('button.prev-btn').forEach(function (btn) {
-        btn.addEventListener('click', function () {
-            if (typeof window.prev === 'function') {
-                // optional: skip when disabled/aria-disabled
-                if (btn.disabled || (btn.getAttribute('aria-disabled') || 'false').toLowerCase() === 'true') return;
-                window.prev.call(this);
-            }
-        });
-    });
+document.addEventListener('click', function (e) {
+    var btn;
 
-    // Next
-    document.querySelectorAll('button.next-btn').forEach(function (btn) {
-        btn.addEventListener('click', function () {
-            if (typeof window.next === 'function') {
-                if (btn.disabled || (btn.getAttribute('aria-disabled') || 'false').toLowerCase() === 'true') return;
-                window.next.call(this);
-            }
-        });
-    });
+    btn = e.target.closest('button.prev');
+    if (btn && typeof window.prev === 'function') {
+        window.prev.call(btn);
+        return;
+    }
 
-    // Copy
-    document.querySelectorAll('button.copy-btn').forEach(function (btn) {
-        btn.addEventListener('click', function () {
-            if (typeof window.copyToClipboard === 'function') {
-                if (btn.disabled || (btn.getAttribute('aria-disabled') || 'false').toLowerCase() === 'true') return;
-                window.copyToClipboard.call(this);
-            }
-        });
-    });
+    btn = e.target.closest('button.next');
+    if (btn && typeof window.next === 'function') {
+        window.next.call(btn);
+        return;
+    }
+
+    btn = e.target.closest('button.copy-btn');
+    if (btn && typeof window.copyToClipboard === 'function') {
+        window.copyToClipboard.call(btn);
+        return;
+    }
 });

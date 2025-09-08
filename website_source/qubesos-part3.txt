@@ -61,20 +61,26 @@ qvm-run -u root dXX xterm
 Early versions of this guide involved a whole lot of copying and pasting. Scripts were copied from this website and pasted into the terminal.
 
 @ paragraph
-Eventually, I decided this wasn't professional enough. The approach is now to distribute this scripts inside a single Debian package called <code>h0</code>. The main benefit of the new approach is it allows the end-user to update their Hero to Zero scripts a lot more easily.
+Eventually, I decided this wasn't professional enough. The new approach is to distribute all the scripts you'll need inside a single Debian package called <code>h0</code>. This allows the end-user to update their Hero to Zero scripts a lot more easily, and feels a bit more user-friendly.
 
 ==================================
 === Configuring Your APT Repos ===
 ==================================
 
 @ paragraph
-The following code:
+In the new approach, there's just one main copy and paste, shown below.
+
+@ paragraph
+The code block you're seeing:
 
 @ unordered list
 <li>removes non-free software from your APT sources</li>
 <li>adds the Hero to Zero APT repository as an APT source</li>
 <li>adds the Hero to Zero GPG repository signing key</li>
 <li>installs <code>h0</code></li>
+
+@ paragraph
+Go ahead and paste it into your <code>dXX</code> terminal, running as root.
 
 @ bash
 # Remove contrib, non-free, and non-free-firmware from all APT lists (deb and deb-src)
@@ -92,7 +98,7 @@ sudo install -d -m 0755 /usr/share/keyrings
 
 # Add the Hero-to-Zero repository, bound to our key (flat repo layout)
 ARCH="$(dpkg --print-architecture)"
-echo "deb [arch=${ARCH} signed-by=/usr/share/keyrings/h0-archive-keyring.gpg] https://hero-to-zero.ch/{suite}/apt ./ " \
+echo "deb [arch=${ARCH} signed-by=/usr/share/keyrings/h0-archive-keyring.gpg] https://hero-to-zero.ch/{suite}/apt ./" \
   | sudo tee /etc/apt/sources.list.d/h0.list >/dev/null
 
 # Embed the ASCII-armored public key and dearmor directly (no temp .asc file)
