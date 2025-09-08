@@ -111,9 +111,23 @@ sudo chmod 0644 /usr/share/keyrings/h0-archive-keyring.gpg
 sudo apt update
 sudo apt install h0
 
-===========================================
-=== Actually, Passwordless Sudo Is Good ===
-===========================================
+=======================================================
+=== Introducing LOB and <code>h0-root-confer</code> ===
+=======================================================
+
+@ paragraph
+A nice trick for controlling the damage from a compromised supply chain is to leave the more risky tools uninstalled by default. These tools are installed as needed, inside the disposable qubes that actually need them. The lifecycle of any risky tools you might need is therefore controlled by the lifecycle of your disposable qubes.
+
+@ paragraph
+To facilitate this, Hero-to-Zero offers a handful of commands that you should try to become familiar with. You also need to understand the concept of the LOB.
+
+@ paragraph
+LOB stands for Local Original for Binaries.
+
+@ paragraph
+Firstly, you can use <code>h0-lob</code> to change directory to the LOB ()
+
+utils offers a script called <code>h0-root-confer</code>, which 
 
 @ paragraph
 Now for some controversy.

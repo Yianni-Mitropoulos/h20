@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# h0-cd-local-scripts: jump to the right /usr/local* dir and list scripts
+# h0-cd: jump to the right /usr/local* dir and list scripts
 # Works in TemplateVMs (/usr/local.orig) and AppVMs/Disposables (/usr/local).
 
 set -euo pipefail
