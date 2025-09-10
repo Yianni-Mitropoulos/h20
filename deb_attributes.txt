@@ -1,6 +1,23 @@
+./build_deb_from_scripts.py package_source --output package_target/h0_1.0.0_all.deb
+Package: h0
+Version: 1.0.0
 Section: utils
 Priority: optional
 Architecture: all
 Maintainer: Hero to Zero <devnull@example.com>
 Description: Hero to Zero Utilities Pack
 Recommends: locales, xclip
+
+./build_deb_from_makefile.py hardened_malloc_source --output package_target/hardened-malloc_1.0.0_amd64.deb --wrap --preload-tool
+Package: hardened-malloc
+Version: 1.0.0
+Section: utils
+Priority: optional
+Architecture: amd64
+Maintainer: Hero to Zero <devnull@example.com>
+XSBC-Original-Maintainer: GrapheneOS Project <contact@grapheneos.org>
+Description: Hardened memory allocator (from GrapheneOS)
+ Provides a hardened malloc library developed by the GrapheneOS
+ project, offering stronger defenses against common memory
+ corruption attacks.
+Depends: libc6
