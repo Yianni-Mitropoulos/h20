@@ -1,0 +1,98 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8"/>
+  <title>Risk Reduction Strategy — Hero to Zero</title>
+  <meta name="viewport" content="width=device-width,initial-scale=1"/>
+  <meta name="description" content="Hero to Zero’s risk reduction strategy: how we handle GPG key custody, vault storage, and residual risks."/>
+  <link rel="stylesheet" href="styles.css"/>
+</head>
+<body>
+  <header>
+    <h1>Risk Reduction Strategy</h1>
+    <p>Hero-to-Zero protects you with humility, rigor, and a bias toward verifiable controls.</p>
+    <p>The centerpiece of our posture is how we handle our cryptographic identity. Everything else — infrastructure, processes, recovery — supports that core.</p>
+    <nav aria-label="Primary">
+      <ul>
+        <li><a href="#key-management">Key Management</a></li>
+        <li><a href="#physical-safeguards">Physical Safeguards</a></li>
+        <li><a href="#operational-controls">Operational Controls</a></li>
+        <li><a href="#residual-risk">Residual Risk</a></li>
+        <li><a href="#roadmap">Roadmap</a></li>
+        <li><a href="#faq">FAQ</a></li>
+      </ul>
+    </nav>
+  </header>
+
+  <main id="main">
+    <section id="key-management">
+      <h2>Key Management</h2>
+      <p>
+        Our GPG private key is the beating heart of Hero-to-Zero's trust model. Here's how it's handled:
+      </p>
+      <ul>
+        <li><strong>Air-gapped computer:</strong> permanently stripped of all network hardware.</li>
+        <li><strong>Encrypted key:</strong> the private key is always encrypted, even on the air-gapped system.</li>
+        <li><strong>Vault storage:</strong> the system lives in a tamper-detectable, RF-shielded secure vault.</li>
+      </ul>
+    </section>
+
+    <section id="physical-safeguards">
+      <h2>Physical Safeguards</h2>
+      <ul>
+        <li>Backups are separated from active signing media.</li>
+        <li>Access to the vault requires dual presence; media are serialized.</li>
+        <li>No radios, NICs, or wireless modules — zero connectivity by design.</li>
+      </ul>
+    </section>
+
+    <section id="operational-controls">
+      <h2>Operational Controls</h2>
+      <ul>
+        <li>The passphrase is known only to one person — <em>Yianni</em>, our founder.</li>
+        <li>The key is only unlocked for short, bounded signing sessions.</li>
+        <li>Transfers in and out are done with single-purpose, wiped media.</li>
+        <li>Policy changes require out-of-band approval and full documentation.</li>
+      </ul>
+    </section>
+
+    <section id="residual-risk">
+      <h2>Residual Risk</h2>
+      <p>
+        The one big gap we can't solve yet: <strong>compelled backdoors by court order</strong>.
+        A legal mandate could force the introduction of tampered software or processes.
+      </p>
+      <p>
+        For now, our small size makes this an unlikely threat in the medium term. But in the long run, it's a problem that demands a stronger answer.
+      </p>
+    </section>
+
+    <section id="roadmap">
+      <h2>Roadmap</h2>
+      <p>
+        We're exploring distributed trust models that reduce single points of failure and resist compelled subversion:
+      </p>
+      <ul>
+        <li>Threshold signing (keys split across independent custodians).</li>
+        <li>Reproducible builds (verifiable artifacts).</li>
+        <li>Transparency logs (auditable signing sessions).</li>
+      </ul>
+      <p>
+        We haven't yet found a design that's both practical and resilient. Please give us time — progress is underway.
+      </p>
+    </section>
+
+    <section id="faq">
+      <h2>FAQ</h2>
+      <p><strong>Q: Why not use an HSM?</strong><br/>
+      A: HSMs reduce some risks, but they don't eliminate compelled backdoors and introduce new supply-chain trust issues.</p>
+      <p><strong>Q: What if Yianni is unavailable?</strong><br/>
+      A: We have continuity procedures, but will only detail them alongside the distributed-trust rollout to avoid opening new attack surfaces prematurely.</p>
+    </section>
+  </main>
+
+  <footer>
+    <p>Copyright <span id="year">2025</span> Hero to Zero — Risk Reduction Strategy.</p>
+  </footer>
+</body>
+</html>

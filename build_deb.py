@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """
-Builds <cwd>/h0.deb from shell scripts in <cwd>/scripts.
+Builds <cwd>/h0.deb from files in <cwd>/package_source.
 
-- Each scripts/*.sh becomes /usr/bin/h0-<basename> (executable) by default.
+- Each file in package_source becomes /usr/bin/h0-<basename> (executable).
 - Package name: hero-to-zero-utils
 - Description: Hero to Zero Utilities Pack
 - Architecture: all
@@ -58,31 +58,61 @@ def _ar_write_member(archive: io.BytesIO, name: str, data: bytes, *, mtime: int 
 # ------------------------- packager core -------------------------
 
 def discover_scripts(scripts_dir: Path) -> List[Path]:
+    """
+    Discover all non-hidden regular files in scripts_dir (non-recursive).
+    """
     if not scripts_dir.is_dir():
         raise SystemExit(f"Expected scripts directory at: {scripts_dir}")
-    files = sorted(p for p in scripts_dir.glob("*.sh") if p.is_file())
+    files = sorted(
+        p for p in scripts_dir.iterdir()
+        if p.is_file() and not p.name.startswith(".")
+    )
     if not files:
-        raise SystemExit(f"No .sh files found in {scripts_dir}")
+        raise SystemExit(f"No non-hidden files found in {scripts_dir}")
     return files
+
+def configure_permissions(scripts: List[Path]):
+    """
+    Ensure all provided files are set to 755 (rwxr-xr-x).
+    """
+    for script in scripts:
+        try:
+            script.chmod(0o755)
+        except Exception as e:
+            print(f"WARNING: Could not set permissions on {script}: {e}")
 
 def make_data_tar(scripts: List[Path], *, prefix: str) -> Tuple[bytes, List[Tuple[str, bytes]]]:
     """
-    Build data.tar.gz with <prefix>/h0-<name> entries.
+    Build data.tar.gz with <prefix>/h0-<stem> entries for every source file.
     Returns (gzip_bytes, [(path_inside_data_tar, file_bytes), ...]) for md5sums.
     """
     filelist: List[Tuple[str, bytes]] = []
     prefix = prefix.strip("/")
 
+    # Detect collisions on output command names (same stem from different files)
+    stems_seen = {}
+    for s in scripts:
+        stem = s.stem
+        if stem in stems_seen:
+            other = stems_seen[stem]
+            raise SystemExit(
+                "Name collision: multiple files map to the same command name:\n"
+                f"  - {other}\n"
+                f"  - {s}\n"
+                "Consider renaming one of them."
+            )
+        stems_seen[stem] = s
+
     raw = io.BytesIO()
     with tarfile.open(mode="w:gz", fileobj=raw) as tf:
         for script in scripts:
-            stem = script.stem  # foo for foo.sh
-            out_name = f"h0-{stem}"
+            stem = script.stem
             tar_path = f"{prefix}/h0-{stem}"
 
             content = script.read_bytes()
             ti = tarfile.TarInfo(name=tar_path)
             ti.size = len(content)
+            # Executable bit for all included files
             ti.mode = 0o100755
             ti.uid = 0
             ti.gid = 0
@@ -149,6 +179,7 @@ def make_control_tar(package: str, version: str, description: str, filelist: Lis
 
 def build_deb(package: str, version: str, description: str, scripts_dir: Path, out_path: Path, *, prefix: str):
     scripts = discover_scripts(scripts_dir)
+    configure_permissions(scripts)
     data_gz, filelist = make_data_tar(scripts, prefix=prefix)
     control_gz = make_control_tar(package, version, description, filelist)
     debian_binary = b"2.0\n"
@@ -161,10 +192,10 @@ def build_deb(package: str, version: str, description: str, scripts_dir: Path, o
     out_path.write_bytes(deb.getvalue())
 
 def main():
-    parser = argparse.ArgumentParser(description="Package scripts/*.sh into h0.deb exposing h0-<name> commands.")
+    parser = argparse.ArgumentParser(description="Package files in package_source into h0.deb exposing h0-<basename> commands.")
     parser.add_argument("--version", default="1.0.0", help="Package version (default: 1.0.0)")
     parser.add_argument("--package", default="h0", help="Debian package name (default: h0)")
-    parser.add_argument("--scripts", default="package_source", help="Scripts directory (default: package_source)")
+    parser.add_argument("--scripts", default="package_source", help="Source directory (default: package_source)")
     parser.add_argument("--output", default="package_target/h0.deb", help="Output .deb path (default: package_target/h0.deb)")
     parser.add_argument("--prefix", default="/usr/bin", help="Install prefix inside package (default: /usr/bin)")
     args = parser.parse_args()
@@ -176,20 +207,22 @@ def main():
 
     # Warn about odd basenames
     bad = []
-    for p in scripts_dir.glob("*.sh"):
+    for p in scripts_dir.iterdir():
+        if not p.is_file() or p.name.startswith("."):
+            continue
         stem = p.stem
         import re
         if not re.fullmatch(r"[A-Za-z0-9._-]+", stem):
             bad.append(p.name)
     if bad:
-        print("WARNING: These script basenames have characters that may not be ideal in command names:")
+        print("WARNING: These basenames have characters that may not be ideal in command names:")
         for n in bad:
             print(f"  - {n}")
-        print("They will still be packaged, but resulting commands may behave unexpectedly.")
+        print("They will still be packaged as h0-<basename>, but resulting commands may behave unexpectedly.")
 
     build_deb(args.package, args.version, description, scripts_dir, out_path, prefix=args.prefix)
     print(f"Built {out_path} with package '{args.package}' version {args.version}.")
-    print(f"Each script *.sh is installed as {args.prefix.rstrip('/')}/h0-<basename>.")
+    print(f"Each file is installed as {args.prefix.rstrip('/')}/h0-<basename>.")
 
 if __name__ == "__main__":
     main()
