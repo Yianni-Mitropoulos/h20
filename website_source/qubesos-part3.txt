@@ -214,7 +214,7 @@ Inside TemplateVMs and AppVMs, autopass works exactly like passwordless sudo. Ho
 To enable autopass, run the following command:
 
 @ bash
-h0-autopass-setup-sender
+h0-autopass-setup
 
 @ paragraph
 In later guides, we'll set up <code>sys-password</code> as the receiver of the temporary passwords emitted by new disposables running autopass. But that's a job for later. For now, we can simply enjoy the passwordless sudo that the aforementioned command gave us.
@@ -241,21 +241,21 @@ sudo h0-harden-filesystem
 =============================================
 
 @ bash
-sudo h0-harden-OS-via-sysctl
+sudo h0-harden-os-via-sysctl
 
 ===============================================
 === Harden the OS via Environment Variables ===
 ===============================================
 
 @ bash
-sudo h0-harden-OS-via-environment
+sudo h0-harden-os-via-environment
 
 ===================================
 === Harden the Memory Allocator ===
 ===================================
 
 @ bash
-sudo h0-enable-hardened-malloc
+sudo h0-harden-memory-allocator
 
 ==============================
 === Perform A Full Upgrade ===
