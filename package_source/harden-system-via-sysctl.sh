@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-sudo tee -a /etc/sysctl.d/50-hardening.conf > /dev/null &lt;&lt;'EOF'
+sudo tee -a /etc/sysctl.d/20-hardening.conf > /dev/null &lt;&lt;'EOF'
 ################################
 #### MEMORY/DEBUG/FORENSICS ####
 ################################

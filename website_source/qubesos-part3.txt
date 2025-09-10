@@ -257,16 +257,16 @@ sudo h0-harden-OS-via-environment
 @ bash
 sudo h0-enable-hardened-malloc
 
-=====================
-=== Set Up Locale ===
-=====================
-
-@ bash
-sudo dpkg-reconfigure locales
-
 ==============================
 === Perform A Full Upgrade ===
 ==============================
 
 @ bash
 sudo h0-full-upgrade
+
+=============================
+=== Configure Your Locale ===
+=============================
+
+@ bash
+sudo dpkg-reconfigure locales
