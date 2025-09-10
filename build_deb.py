@@ -3,14 +3,15 @@
 Builds <cwd>/h0.deb from files in <cwd>/package_source.
 
 - Each file in package_source becomes /usr/bin/h0-<basename> (executable).
-- Package name: hero-to-zero-utils
-- Description: Hero to Zero Utilities Pack
-- Architecture: all
-- Output: h0.deb in current working directory
+- Package name: configurable via --package (default: h0)
+- Description and other control fields are loaded from <cwd>/deb_attributes.txt
+- Architecture, Section, Priority, Maintainer, etc. should be provided in deb_attributes.txt
+- Architecture defaults to "all" if not present in deb_attributes.txt
+- Output: h0.deb at --output (default: package_target/h0.deb)
 - Pure Python, no external tools required.
 
 Usage:
-  python make_h0_deb.py [--version 1.0.0] [--package hero-to-zero-utils] [--prefix /usr/bin]
+  python make_h0_deb.py [--version 1.0.0] [--package hero-to-zero-utils] [--prefix /usr/bin] [--scripts package_source] [--output package_target/h0.deb] [--control-file deb_attributes.txt]
 """
 from __future__ import annotations
 import argparse
@@ -20,7 +21,7 @@ import os
 from pathlib import Path
 import tarfile
 import time
-from typing import List, Tuple
+from typing import List, Tuple, Dict
 
 # ------------------------- helpers: ar (.deb) writer -------------------------
 
@@ -54,6 +55,58 @@ def _ar_write_member(archive: io.BytesIO, name: str, data: bytes, *, mtime: int 
     archive.write(_ar_member_header(name.encode(), len(data), mtime=mtime, uid=uid, gid=gid, mode=mode))
     archive.write(data)
     _ar_pad_even(archive)
+
+# ------------------------- control file parsing -------------------------
+
+def parse_control_file(path: Path) -> Dict[str, str]:
+    """
+    Parse a Debian control-style file (key: value with optional folded lines).
+    - Ignores blank lines and comments beginning with '#'.
+    - Supports multi-line values using continuation lines that start with a single space.
+      Example:
+        Description: Hero to Zero Utilities Pack
+         This package provides ...
+    Returns a dict mapping field names to their string values.
+    """
+    fields: Dict[str, str] = {}
+    if not path.is_file():
+        return fields
+
+    current_key: str | None = None
+    current_val_lines: List[str] = []
+
+    def _commit():
+        nonlocal current_key, current_val_lines
+        if current_key is not None:
+            fields[current_key] = "\n".join(current_val_lines).rstrip("\n")
+        current_key = None
+        current_val_lines = []
+
+    for raw in path.read_text(encoding="utf-8").splitlines():
+        line = raw.rstrip("\n")
+        if not line.strip() or line.lstrip().startswith("#"):
+            # blank or comment -> commit any pending field and continue
+            if line.strip() == "":
+                _commit()
+            continue
+
+        if line.startswith(" "):  # continuation
+            if current_key is None:
+                raise SystemExit(f"Continuation line encountered without a field in {path}: {line!r}")
+            # Keep the leading space as per RFC822-style folding rules for Debian control files
+            current_val_lines.append(line[1:])
+            continue
+
+        # New key: value line
+        if ":" not in line:
+            raise SystemExit(f"Invalid control field line in {path}: {line}")
+        key, value = line.split(":", 1)
+        _commit()
+        current_key = key.strip()
+        current_val_lines = [value.lstrip()]
+
+    _commit()
+    return fields
 
 # ------------------------- packager core -------------------------
 
@@ -129,22 +182,73 @@ def bytes_md5(data: bytes) -> str:
     h.update(data)
     return h.hexdigest()
 
-def make_control_tar(package: str, version: str, description: str, filelist: List[Tuple[str, bytes]]) -> bytes:
+def make_control_tar(
+    package: str,
+    version: str,
+    filelist: List[Tuple[str, bytes]],
+    extra_fields: Dict[str, str],
+) -> bytes:
+    """
+    Build control.tar.gz with:
+      - control (merged fields)
+      - md5sums (checksums of payload files)
+    Field precedence:
+      - Package and Version are taken from CLI arguments (this function's params).
+      - Installed-Size is computed here and cannot be overridden.
+      - All other fields come from extra_fields (deb_attributes.txt).
+      - If Architecture is not present in extra_fields, default to "all".
+    """
     total_bytes = sum(len(b) for _, b in filelist)
     installed_size_kib = (total_bytes + 1023) // 1024 or 1
 
-    control_fields = [
-        f"Package: {package}",
-        f"Version: {version}",
-        "Section: utils",
-        "Priority: optional",
-        "Architecture: all",
-        "Maintainer: Hero to Zero <devnull@example.com>",
-        f"Installed-Size: {installed_size_kib}",
-        f"Description: {description}",
-    ]
-    control_text = "\n".join(control_fields) + "\n"
+    # Start with required/derived fields
+    control_fields: Dict[str, str] = {
+        "Package": package,
+        "Version": version,
+        "Installed-Size": str(installed_size_kib),
+    }
 
+    # Merge external fields
+    for k, v in extra_fields.items():
+        # Do not allow overriding Installed-Size; keep CLI for Package/Version
+        if k in ("Installed-Size", "Package", "Version"):
+            continue
+        control_fields[k] = v
+
+    # Ensure Architecture has a sensible default if not given
+    control_fields.setdefault("Architecture", "all")
+
+    # Produce Debian control text (order is not strictly required, but we try a common order)
+    preferred_order = [
+        "Package",
+        "Version",
+        "Section",
+        "Priority",
+        "Architecture",
+        "Maintainer",
+        "Installed-Size",
+        "Depends",
+        "Recommends",
+        "Suggests",
+        "Homepage",
+        "Description",
+    ]
+    # Keep preferred order first, then append any remaining keys
+    ordered_keys = [k for k in preferred_order if k in control_fields]
+    ordered_keys += [k for k in control_fields.keys() if k not in ordered_keys]
+
+    def _format_field(k: str, v: str) -> str:
+        if "\n" not in v:
+            return f"{k}: {v}"
+        # For multi-line, Debian control files use continuation lines starting with a space.
+        first, *rest = v.splitlines()
+        return "\n".join(
+            [f"{k}: {first}"] + [f" {line}" for line in rest]
+        )
+
+    control_text = "\n".join(_format_field(k, control_fields[k]) for k in ordered_keys) + "\n"
+
+    # md5sums content
     md5_text = "\n".join(f"{bytes_md5(data)}  {path}" for path, data in filelist)
     if md5_text:
         md5_text += "\n"
@@ -152,7 +256,7 @@ def make_control_tar(package: str, version: str, description: str, filelist: Lis
     raw = io.BytesIO()
     with tarfile.open(mode="w:gz", fileobj=raw) as tf:
         # control
-        cbytes = control_text.encode()
+        cbytes = control_text.encode("utf-8")
         cinfo = tarfile.TarInfo(name="control")
         cinfo.size = len(cbytes)
         cinfo.mode = 0o100644
@@ -164,7 +268,7 @@ def make_control_tar(package: str, version: str, description: str, filelist: Lis
         tf.addfile(cinfo, io.BytesIO(cbytes))
 
         # md5sums
-        mbytes = md5_text.encode()
+        mbytes = md5_text.encode("utf-8")
         minfo = tarfile.TarInfo(name="md5sums")
         minfo.size = len(mbytes)
         minfo.mode = 0o100644
@@ -177,12 +281,23 @@ def make_control_tar(package: str, version: str, description: str, filelist: Lis
 
     return raw.getvalue()
 
-def build_deb(package: str, version: str, description: str, scripts_dir: Path, out_path: Path, *, prefix: str):
+def build_deb(
+    package: str,
+    version: str,
+    scripts_dir: Path,
+    out_path: Path,
+    *,
+    prefix: str,
+    extra_fields: Dict[str, str],
+):
     scripts = discover_scripts(scripts_dir)
     configure_permissions(scripts)
     data_gz, filelist = make_data_tar(scripts, prefix=prefix)
-    control_gz = make_control_tar(package, version, description, filelist)
+    control_gz = make_control_tar(package, version, filelist, extra_fields)
     debian_binary = b"2.0\n"
+
+    # Ensure output directory exists
+    out_path.parent.mkdir(parents=True, exist_ok=True)
 
     deb = io.BytesIO()
     deb.write(AR_MAGIC)
@@ -192,37 +307,61 @@ def build_deb(package: str, version: str, description: str, scripts_dir: Path, o
     out_path.write_bytes(deb.getvalue())
 
 def main():
-    parser = argparse.ArgumentParser(description="Package files in package_source into h0.deb exposing h0-<basename> commands.")
+    parser = argparse.ArgumentParser(description="Build h0.deb from package_source exposing h0-<basename> commands.")
     parser.add_argument("--version", default="1.0.0", help="Package version (default: 1.0.0)")
     parser.add_argument("--package", default="h0", help="Debian package name (default: h0)")
     parser.add_argument("--scripts", default="package_source", help="Source directory (default: package_source)")
     parser.add_argument("--output", default="package_target/h0.deb", help="Output .deb path (default: package_target/h0.deb)")
     parser.add_argument("--prefix", default="/usr/bin", help="Install prefix inside package (default: /usr/bin)")
+    parser.add_argument("--control-file", default="deb_attributes.txt", help="Path to external control fields (default: deb_attributes.txt)")
     args = parser.parse_args()
 
     cwd = Path.cwd()
     scripts_dir = (cwd / args.scripts).resolve()
     out_path = (cwd / args.output).resolve()
-    description = "Hero to Zero Utilities Pack"
+    control_path = (cwd / args.control_file).resolve()
 
     # Warn about odd basenames
     bad = []
-    for p in scripts_dir.iterdir():
-        if not p.is_file() or p.name.startswith("."):
-            continue
-        stem = p.stem
-        import re
-        if not re.fullmatch(r"[A-Za-z0-9._-]+", stem):
-            bad.append(p.name)
+    if scripts_dir.is_dir():
+        for p in scripts_dir.iterdir():
+            if not p.is_file() or p.name.startswith("."):
+                continue
+            stem = p.stem
+            import re
+            if not re.fullmatch(r"[A-Za-z0-9._-]+", stem):
+                bad.append(p.name)
     if bad:
         print("WARNING: These basenames have characters that may not be ideal in command names:")
         for n in bad:
             print(f"  - {n}")
         print("They will still be packaged as h0-<basename>, but resulting commands may behave unexpectedly.")
 
-    build_deb(args.package, args.version, description, scripts_dir, out_path, prefix=args.prefix)
+    # Load external control fields
+    extra_fields = parse_control_file(control_path)
+    if not extra_fields:
+        print(f"NOTE: No external control fields loaded from {control_path}. Using defaults where applicable.")
+        # Provide a minimal sensible default if file is missing/empty.
+        # (Architecture defaults to 'all' in make_control_tar)
+        extra_fields = {
+            # Example defaults you might want if the file is missing:
+            # "Section": "utils",
+            # "Priority": "optional",
+            # "Maintainer": "Hero to Zero <devnull@example.com>",
+            # "Description": "Hero to Zero Utilities Pack",
+        }
+
+    build_deb(
+        args.package,
+        args.version,
+        scripts_dir,
+        out_path,
+        prefix=args.prefix,
+        extra_fields=extra_fields,
+    )
     print(f"Built {out_path} with package '{args.package}' version {args.version}.")
     print(f"Each file is installed as {args.prefix.rstrip('/')}/h0-<basename>.")
+    print(f"Control fields loaded from: {control_path}")
 
 if __name__ == "__main__":
     main()

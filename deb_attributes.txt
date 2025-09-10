@@ -1,0 +1,6 @@
+Section: utils
+Priority: optional
+Architecture: all
+Maintainer: Hero to Zero <devnull@example.com>
+Description: Hero to Zero Utilities Pack
+Recommends: locales, xclip

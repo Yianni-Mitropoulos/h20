@@ -229,13 +229,6 @@ With passwordless sudo now available in TemplateVMs, there's no need to run as r
 @ paragraph
 This means that, from here onwards, you can launch terminals from the Q menu. They'll have sufficient permissions to do everything you need, without running as root user.
 
-=====================
-=== Set Up Locale ===
-=====================
-
-@ bash
-sudo h0-configure-locale
-
 ==============================
 === Harden the File System ===
 ==============================
@@ -263,6 +256,13 @@ sudo h0-harden-OS-via-environment
 
 @ bash
 sudo h0-enable-hardened-malloc
+
+=====================
+=== Set Up Locale ===
+=====================
+
+@ bash
+sudo dpkg-reconfigure locales
 
 ==============================
 === Perform A Full Upgrade ===

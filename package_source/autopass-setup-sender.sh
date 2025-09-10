@@ -1,9 +1,11 @@
 #!/usr/bin/env bash
-# Installs passwordless sudo. Also ensures that disposables randomly generate
-# their own custom passwords at startup, thereby reducing the blast radius in
-# case of compromise. These custom passwords are sent to sys-password via the
-# local.SendDisposablePassword remote procedure call (hence the name of the
-# script.)
+# Installs passwd and passwordless sudo. Also ensures that disposables randomly
+# generate their own custom passwords at startup, thereby reducing the blast
+# radius in the event of a compromise. These custom passwords are sent to the
+# sys-password qube via the local.SendDisposablePassword remote procedure call.
+# You can set up sys-password by running `h0-autopass-setup-receiver`. You also
+# have to allow the local.SendDisposablePassword RPC in dom0. Simply run
+# `h0-autopass-print-dom0-instructions` if you'd like to see the details.
 
 set -euo pipefail
 
@@ -16,7 +18,7 @@ UNIT="/etc/systemd/system/qubes-gen-sudo-pw.service"
 
 echo "Installing prerequisites via apt..."
 sudo apt update
-sudo apt install --no-install-recommends qubes-core-agent-passwordless-root passwd
+sudo apt install --no-install-recommends passwd qubes-core-agent-passwordless-root
 
 echo "Writing config to $CONF"
 sudo tee "$CONF" >/dev/null <<EOF
