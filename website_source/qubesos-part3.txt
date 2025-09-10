@@ -96,7 +96,7 @@ SUITE="${CODENAME}"
 echo "Detected Debian codename: ${CODENAME}"
 echo "Using suite: ${SUITE}"
 
-echo "Writing hardened sources.list (HTTPS, ftp.debian.org + security.debian.org, main only, deb-src enabled)…"
+echo "Writing hardened sources.list (HTTPS, ftp.debian.org + security.debian.org, main only, deb-src enabled)"
 cat >/etc/apt/sources.list <<EOF
 deb https://ftp.debian.org/debian ${SUITE} main
 deb-src https://ftp.debian.org/debian ${SUITE} main
@@ -255,7 +255,9 @@ sudo h0-harden-os-via-environment
 ===================================
 
 @ bash
-sudo h0-harden-memory-allocator
+sudo apt update
+sudo apt install hardened-malloc
+hardened-malloc-preload-everywhere
 
 ==============================
 === Perform A Full Upgrade ===
