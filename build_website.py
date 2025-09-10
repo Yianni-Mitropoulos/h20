@@ -79,6 +79,8 @@ def _pre_sensitive_indent(value: str, indent: str) -> str:
             out.append((indent + line if line else "") + nl)
     return "".join(out)
 
+def _escape_braces(s: str) -> str:
+    return s.replace("{", "{{").replace("}", "}}")
 
 def indent_aware_format(template: str, mapping: Dict[str, str]) -> str:
     """
@@ -87,6 +89,10 @@ def indent_aware_format(template: str, mapping: Dict[str, str]) -> str:
 
     After handling full-line placeholders, do a normal inline .format_map for the rest.
     """
+    # IMPORTANT: escape braces in all mapping values up front, so both the
+    # full-line splice *and* the later format_map see safe text.
+    esc = {k: (_escape_braces(v) if isinstance(v, str) else v) for k, v in mapping.items()}
+
     lines = template.splitlines(True)  # preserve newlines
     out: List[str] = []
 
@@ -94,8 +100,8 @@ def indent_aware_format(template: str, mapping: Dict[str, str]) -> str:
         m = re.match(r'^([ \t]*)\{([A-Za-z0-9_]+)\}[ \t]*\r?\n?$', raw)
         if m:
             indent, key = m.group(1), m.group(2)
-            if key in mapping:
-                val = mapping[key]
+            if key in esc:
+                val = esc[key]
                 if key in ("body", "pages_html"):
                     out.append(_pre_sensitive_indent(val, indent))
                 else:
@@ -105,8 +111,7 @@ def indent_aware_format(template: str, mapping: Dict[str, str]) -> str:
         out.append(raw)
 
     templ2 = "".join(out)
-    return templ2.format_map(_SafeDict(mapping))
-
+    return templ2.format_map(_SafeDict(esc))
 
 # ====================================================================
 # Element renderers  (ONLY bash code escapes; others are raw)
@@ -123,9 +128,9 @@ def render_heading(tpl: str, lines: List[str]) -> str:  # NEW
 
 
 def render_list(tpl: str, lines: List[str]) -> str:
-    # Lines are already <li>...</li> — inject as-is
+    # Keep items as-is; let indent_aware_format apply the placeholder line's indent uniformly.
     items = "\n".join(lines).rstrip()
-    return tpl.replace("{items}", items)
+    return indent_aware_format(tpl, {"items": items})
 
 
 def _align_pre_left(s: str) -> str:
