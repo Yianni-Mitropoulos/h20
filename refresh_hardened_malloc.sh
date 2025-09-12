@@ -11,7 +11,8 @@ rm -rf "$DIR"
 # Shallow clone only the main branch
 git clone --depth=1 --single-branch --branch "$BR" "$URL" "$DIR"
 
-# Remove its .git so it's just plain source files
+# Remove its .git and .github so it's just plain source files
 rm -rf "$DIR/.git"
+rm -rf "$DIR/.github"
 
 echo "Refreshed $DIR from $URL ($BR), ready to commit"
