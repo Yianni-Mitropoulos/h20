@@ -95,12 +95,6 @@ EOF
 
 echo "Creating /etc/sysctl.d/50-overrides.conf"
 sudo tee /etc/sysctl.d/50-overrides.conf > /dev/null <<'EOF'
-# Uncomment to re-enable modprobe
-# kernel.modprobe=/sbin/modprobe
-
-# Uncomment to allow user namespaces (used by Chrome/Chromium/VSCode/Docker/Flatpack/Snap, etc.)
-# kernel.unprivileged_userns_clone = 0
-
 # Uncomment this if you've got multiple simultaneous network connections (e.g. WiFi + Ethernet).
 # net.ipv4.conf.all.rp_filter = 2
 
@@ -110,6 +104,12 @@ sudo tee /etc/sysctl.d/50-overrides.conf > /dev/null <<'EOF'
 
 # Uncomment to re-enable local "loopback" IPv6 connections (may help with Chrome/Chromium/VSCode/PostgreSQL issues)
 # net.ipv6.conf.lo.disable_ipv6 = 0
+
+# Uncomment to re-enable modprobe
+# kernel.modprobe=/sbin/modprobe
+
+# Uncomment to allow user namespaces (used by Chrome/Chromium/VSCode/Docker/Flatpack/Snap, etc.)
+# kernel.unprivileged_userns_clone = 0
 
 # Uncomment to increasing logging (e.g. to support automatic intrusion detection)
 # kernel.audit_enabled = 1

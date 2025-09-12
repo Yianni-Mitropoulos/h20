@@ -1,0 +1,81 @@
+==================================================
+=== Redirect User Data Storage To HDD: The Why ===
+==================================================
+
+@ paragraph
+We'll now set up persistent user data so that it's stored on HDD, instead of the default volume (which is almost surely a SSD).
+
+@ paragraph
+The purpose of this is to improve data deletability. It also reduces the cost per gigabyte, as an ancillary bonus. 
+
+@ paragraph
+Of course, there's also a downside. Persistent files will load and save slightly slower, but it's usually worth it.
+
+==========================
+=== Safe To Overwrite? ===
+==========================
+
+@ paragraph
+This guide assumes the HDD is new, or at least safe to overwrite.
+
+@ paragraph
+If that's not true, you'll have to adapt accordingly. If you're not very tech savvy, I recommend just going out and buying a new HDD. After all, they're not every expensive, the extra space is always handy, and this allows you to follow this guide letter-for-letter.
+
+============================
+=== Identify Device Name ===
+============================
+
+@ paragraph
+The first step is to setting up automatic HDD use is to identify the name of the disk, viewed as a device. To do this, run the following in <code>dom0</code>.
+
+@ bash
+lsblk -d
+
+@ paragraph
+The biggest one is usually going to be the HDD device. Type its name below once you've identified it:
+
+@ input field (xxx)
+Name of your HDD device (e.g. "sda", "sdb", etc.)
+
+===============================
+=== Set Up The Volume Group ===
+===============================
+
+@ paragraph
+<strong>Warning:</strong> don't perform the next step unless the disk is empty. If it's not empty, you need to move the data you want elsewhere, in which case you should also consider wiping the disk before proceeding, to improve your overall privacy posture. Consult with AI if you're not sure.
+
+@ paragraph
+Start off by wiping the file system:
+
+@ bash
+sudo wipefs -a /dev/sdxxx
+
+@ paragraph
+Now create a physical volume backed by the newly wiped device.
+
+@ bash
+sudo pvcreate /dev/sdxxx
+
+@ paragraph
+Next, create a volume group backed by the physical volume you just created.
+
+@ bash
+sudo vgcreate qubes_sdxxx /dev/sdxxx
+
+@ paragraph
+Now create a logical volume from that:
+
+@ bash
+sudo lvcreate -T qubes_sdxxx/pool -l 100%FREE
+
+@ paragraph
+We'll now make a Qubes storage pool backed by that:
+
+@ bash
+qvm-pool add vm-pool-hdd lvm_thin -o volume_group=qubes_sdxxx -o thin_pool=pool
+
+@ paragraph
+Finally, we'll register that that as the default Qubes storage pool for every home directory:
+
+@ bash
+qubes-prefs default_pool_private vm-pool-hdd

@@ -1,11 +1,11 @@
-Forging The First Qube
+Building the Porch, Studio, and Ward
 
 ============
 === Goal ===
 ============
 
 @ paragraph
-This guide will help you configure a hardened Debian template within QubesOS.
+This guide will help you create a trinity of templates, upon which all our other templates will be based.
 
 =============================
 === Choose Debian Version ===
@@ -17,45 +17,57 @@ What version of Debian would you like to target? The latest is 13.
 @ input field(XX)
 Enter your preferred version of Debian, e.g. 13
 
-==========================================
-=== Download A Minimal Debian Template ===
-==========================================
+==============================
+=== Clone <code>dXX</code> ===
+==============================
 
 @ paragraph
-To get started, open a <code>dom0</code> terminal.
+Ensure <code>dXX</code> is shutdown. Then create three clones of <code>dXX</code>, having the following names:
+
+@ unordered list
+<li>dXX-porch</li> - for qubes that will have internet access.
+<li>dXX-studio</li> - for qubes that are purely offline, but with rich functionality.
+<li>dXX-ward</li> - for qubes that are purely offline and have very limited functionality.
+
+========================
+=== Set Up The Porch ===
+========================
 
 @ paragraph
-Now go ahead and download the minimal Debian template, by running the following command.
+In the porch, run the following code.
+
+@ paragraph
+It enables networking.
 
 @ bash
-qubes-dom0-update qubes-template-debian-XX-minimal
-
-==========================
-=== Clone The Template ===
-==========================
+sudo apt update
+sudo apt install qubes-core-agent-networking
 
 @ paragraph
-To avoid contaminating the base template, we'll now create a clone called <code>dXX</code>. This will serve as the basis of most of our virtual machines.
+You may also want to re-enable IPv6.
+TODO: Come up with easier sysctl framework.
 
-@ bash
-qvm-clone debian-XX-minimal dXX
-
-========================================
-=== Open A Root-User Terminal in dXX ===
-========================================
+=========================
+=== Set Up The Studio ===
+=========================
 
 @ paragraph
-There's little point in opening a terminal in <code>dXX</code> from the Q menu, as you won't have root permissions.
+In the studio, run the following code.
 
 @ paragraph
-Instead, you should run the following command, which opens a terminal in <code>dXX</code> as the root user.
+It ensures that unwanted services (pertaining to internet, printing, etc.) are consistently re-masked and re-disabled at startup and shutdown.
 
-@ bash
-qvm-run -u root dXX xterm
+@ paragraph
+h0-at-startup  h0-mask-and-disable-the-usual-suspects
+h0-at-shutdown h0-mask-and-disable-the-usual-suspects
 
-======================================
-=== The History of <code>h0</code> ===
-======================================
+@ paragraph
+TODO: Come up systematic framework for unmasking when the correct device is passed in.
+Could cover both porch and studio.
+
+=======================
+=== Set Up The Ward ===
+=======================
 
 @ paragraph
 Early versions of this guide involved a whole lot of copying and pasting. Scripts were copied from this website and pasted into the terminal.
