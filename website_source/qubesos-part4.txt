@@ -25,19 +25,16 @@ Enter your preferred version of Debian, e.g. 13
 Ensure <code>dXX</code> is shutdown. Then create three clones of <code>dXX</code>, having the following names:
 
 @ unordered list
-<li>dXX-porch</li> - for qubes that will have internet access.
-<li>dXX-studio</li> - for qubes that are purely offline, but nevertheless need to be full-featured.
-<li>dXX-ward</li> - for qubes that are purely offline, and also need very limited functionality.
+<li><code>dXX-porch</code> - for qubes that will have internet access.                                           </li>
+<li><code>dXX-studio</code> - for qubes that are purely offline, but which nevertheless need to be full-featured.</li>
+<li><code>dXX-ward</code> - for qubes that are purely offline, and which only need very limited functionality.   </li>
 
 ========================
 === Set Up The Porch ===
 ========================
 
 @ paragraph
-In the porch, run the following code.
-
-@ paragraph
-It enables networking.
+In the porch, run the following code. It enables networking and installs zeropad.
 
 @ bash
 sudo apt update

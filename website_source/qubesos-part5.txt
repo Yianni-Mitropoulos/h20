@@ -1,0 +1,75 @@
+Configuring the Porch
+
+============
+=== Goal ===
+============
+
+@ paragraph
+This guide will help you build out and configure the porch, which is the part of your system that talks to the internet.
+
+=============================
+=== Choose Debian Version ===
+=============================
+
+@ paragraph
+What version of Debian would you like to target? The latest is 13.
+
+@ input field(XX)
+Enter your preferred version of Debian, e.g. 13
+
+====================================
+=== Clone <code>dXX-porch</code> ===
+====================================
+
+@ paragraph
+Ensure <code>dXX-porch</code> is shutdown. Then create five clones of <code>dXX-porch</code>, having the following names:
+
+@ unordered list
+<li><code>dXX-porch-mullvad-browser</code>   - for the Mullvad web browser.                                                </li>
+<li><code>dXX-porch-chromium-browser</code>  - for the Chromium web browser.                                               </li>
+<li><code>dXX-porch-downloader</code>        - for terminal-based download utilities.                                      </li>
+<li><code>dXX-porch-software-builder</code>  - for verifying and compiling software, assuming internet access is necessary.</li>
+<li><code>dXX-porch-software-developer/code> - for doing software development.                                             </li>
+
+@ paragraph
+You can skip the software developer if you 
+==============================
+=== Set Up Mullvad Browser ===
+==============================
+
+@ paragraph
+In the porch, run the following code.
+
+@ paragraph
+It enables networking.
+
+@ bash
+sudo apt update
+sudo apt install qubes-core-agent-networking
+h0-sysctl enable modprobe
+
+@ paragraph
+You may also want to re-enable IPv6. This increases attack surface, but is sometimes useful. This can be done as follows:
+
+@ bash
+h0-sysctl enable ipv6
+
+=========================
+=== Set Up The Studio ===
+=========================
+
+@ paragraph
+In the studio, run the following code.
+
+@ bash
+h0-sysctl enable modprobe
+
+=======================
+=== Set Up The Ward ===
+=======================
+
+@ paragraph
+In the ward, run the following code.
+
+@ bash
+h0-harden-via-aggressive-purge

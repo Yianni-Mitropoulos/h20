@@ -200,6 +200,9 @@ Now that you've trusted our repo, you can install the scripts like so:
 apt update
 apt install h0
 
+@ paragraph
+NOTE: This will also apt install <code>locales</code> and <code>xclip</code>. These don't represent much attack surface.
+
 ========================
 === Install Autopass ===
 ========================
@@ -286,3 +289,25 @@ sudo h0-full-upgrade
 
 @ bash
 sudo dpkg-reconfigure locales
+
+=======================
+=== Install Zeropad ===
+=======================
+
+@ paragraph
+This step is optional, but strongly recommended.
+
+@ paragraph
+It's useful to have a file manager and decent text editor available across the board. Unfortunately, it's hard to find any recommendations that don't also pull in library clusters with large attack surfaces (like GTK and Qt).
+
+@ paragraph
+For the sake of minimalism, I recommend my own software, which is called Zeropad. It provides a file manager, a text editor, and an embedded terminal all in one. It's also genuinely tiny, memory safe, and dependent only on tkinter (which has a much smaller attack surface, as compared with GTK or Qt).
+
+@ paragraph
+The following code downloads and installs Zeropad:
+
+@ bash
+apt install zeropad
+
+@ paragraph
+If the minimalism of zeropad isn't your cup of tea, and you want something prettier, you can use <code>sudo apt install thunar mousepad</code> instead of zeropad. But note that this will pull in a lot of GTK libraries, which massively increases your attack surface. Ultimately the choice is yours.
