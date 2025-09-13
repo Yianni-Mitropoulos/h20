@@ -236,6 +236,13 @@ This means that, from here onwards, you can launch terminals from the Q menu. Th
 @ bash
 sudo h0-harden-filesystem
 
+===============================================
+=== Harden the OS via Environment Variables ===
+===============================================
+
+@ bash
+sudo h0-harden-os-via-environment-vars
+
 =============================================
 === Harden the OS via <code>sysctl</code> ===
 =============================================
@@ -243,12 +250,12 @@ sudo h0-harden-filesystem
 @ bash
 sudo h0-harden-os-via-sysctl
 
-===============================================
-=== Harden the OS via Environment Variables ===
-===============================================
+================================================
+=== Harden the OS via <code>systemctl</code> ===
+================================================
 
 @ bash
-sudo h0-harden-os-via-environment
+sudo h0-harden-os-via-systemctl
 
 ===================================
 === Harden the Memory Allocator ===
