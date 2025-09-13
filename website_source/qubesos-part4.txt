@@ -26,8 +26,8 @@ Ensure <code>dXX</code> is shutdown. Then create three clones of <code>dXX</code
 
 @ unordered list
 <li>dXX-porch</li> - for qubes that will have internet access.
-<li>dXX-studio</li> - for qubes that are purely offline, but with rich functionality.
-<li>dXX-ward</li> - for qubes that are purely offline and have very limited functionality.
+<li>dXX-studio</li> - for qubes that are purely offline, but nevertheless need to be full-featured.
+<li>dXX-ward</li> - for qubes that are purely offline, and also need very limited functionality.
 
 ========================
 === Set Up The Porch ===
