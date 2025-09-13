@@ -22,7 +22,13 @@ class Zeropad(Menus, FilePanel, TextPanel, TerminalPanel, tk.Tk):
         BG_STATUS  = "#0f172a"  # status bar
         FG_TEXT    = "#e5e7eb"
 
-        self._palette = dict(BG=BG, BG_PANEL=BG_PANEL, BG_STATUS=BG_STATUS, FG_TEXT=FG_TEXT)
+        self._palette = dict(
+            BG=BG,
+            BG_PANEL=BG_PANEL,
+            BG_STATUS=BG_STATUS,
+            FG_TEXT=FG_TEXT,
+            BG_CANVAS="#0b1220",  # terminal bg
+        )
         self.configure(bg=BG)
 
         style = ttk.Style(self)
@@ -52,10 +58,13 @@ class Zeropad(Menus, FilePanel, TextPanel, TerminalPanel, tk.Tk):
         self.status = tk.Frame(self, height=28, bg=BG_STATUS, highlightthickness=0, bd=0)
         self.status.pack(side="bottom", fill="x")
         self.status.pack_propagate(False)
-        self.cwd = Path.home()
+
+        # Start in the directory the app was launched from
+        launch_cwd = Path(os.getcwd()).resolve()
+        self.cwd = launch_cwd
         self.cwd_var = tk.StringVar(value=str(self.cwd))
-        tk.Label(self.status, textvariable=self.cwd_var, anchor="w", bg=BG_STATUS, fg=FG_TEXT, padx=8)\
-          .pack(side="left", fill="y")
+        tk.Label(self.status, textvariable=self.cwd_var, anchor="w",
+                 bg=BG_STATUS, fg=FG_TEXT, padx=8).pack(side="left", fill="y")
 
         # -------- Main layout: Panedwindows --------
         self.hpaned = ttk.Panedwindow(self, orient="horizontal")
@@ -73,7 +82,7 @@ class Zeropad(Menus, FilePanel, TextPanel, TerminalPanel, tk.Tk):
         self.hpaned.add(self.vpaned)
 
         self.init_text_panel()     # defines self.editor
-        self.init_terminal_panel() # defines self.terminal
+        self.init_terminal_panel() # defines self.terminal (embeds xterm/tmux, registers cleanup)
 
         # Initial attach (all enabled by default)
         self.hpaned.insert(0, self.fm)
@@ -89,7 +98,12 @@ class Zeropad(Menus, FilePanel, TextPanel, TerminalPanel, tk.Tk):
 
         # Prime initial sash positions and initial file panel load
         self.after_idle(self._init_sashes)
-        self.after_idle(self.refresh_file_panel)
+
+        # Make sure terminal cleanup runs on close
+        self.protocol("WM_DELETE_WINDOW", self._on_close)
+
+        # Use the centralized setter so terminal receives the initial cwd (queued if not ready)
+        self.after_idle(lambda: self.set_cwd(self.cwd))
 
     # -------- Utilities shared by panels/menus --------
     @staticmethod
@@ -102,19 +116,32 @@ class Zeropad(Menus, FilePanel, TextPanel, TerminalPanel, tk.Tk):
     def _init_sashes(self):
         self.hsplit.restore_ratio_async()
         self.vsplit.restore_ratio_async()
-
-    # -------- Centralized CWD management (kept in main, as requested) --------
-    def set_cwd(self, new_path: Path):
-        """Set the app's logical CWD and notify panels."""
-        try:
-            p = Path(new_path).expanduser().resolve()
-        except Exception:
-            return
-        if not p.exists() or not p.is_dir():
-            return
-        self.cwd = p
-        self.cwd_var.set(str(self.cwd))
+        # initial load after sashes are settled (ensures columns size nicely)
         self.refresh_file_panel()
+
+    # -------- Centralized CWD management --------
+    def set_cwd(self, path, origin="app"):
+        p = Path(path).resolve()
+        if not p.exists():
+            return
+        if getattr(self, "cwd", None) and Path(self.cwd).resolve() == p:
+            # No real change
+            return
+
+        self.cwd = p
+        # Update status bar
+        self.cwd_var.set(str(self.cwd))
+
+        # Refresh file panel
+        if hasattr(self, "refresh_file_panel"):
+            self.refresh_file_panel()
+
+        # Push to terminal only if the change originated from the app UI
+        if origin == "app" and hasattr(self, "terminal_set_cwd"):
+            try:
+                self.terminal_set_cwd(self.cwd)
+            except Exception:
+                pass
 
     # ========================
     # Toggle handlers (centralized here)
@@ -168,6 +195,16 @@ class Zeropad(Menus, FilePanel, TextPanel, TerminalPanel, tk.Tk):
             self.vpaned.forget(self.terminal)
 
         self.vsplit.restore_ratio_async()
+
+    # -------- App close (run registered cleanup hooks e.g. terminal) --------
+    def _on_close(self):
+        if hasattr(self, "_cleanup_hooks"):
+            for fn in list(self._cleanup_hooks):
+                try:
+                    fn()
+                except Exception:
+                    pass
+        self.destroy()
 
 
 if __name__ == "__main__":
