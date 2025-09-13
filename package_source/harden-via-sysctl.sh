@@ -10,7 +10,7 @@ fs.protected_hardlinks = 1   # Block hardlink privilege attacks
 fs.protected_regular = 2     # Block regular file hardening attacks
 fs.protected_symlinks = 1    # Block symlink privilege attacks
 fs.suid_dumpable = 0         # No setuid core dumps
-kernel.audit_enabled = 0              # No kernel audit; improves forensics resistance
+kernel.audit_enabled = 1              # Enable kernel audits; improves intrusion detection, weakens forensics resistance
 kernel.core_pattern = "|/bin/false"   # Never dump core to disk
 kernel.core_pipe_limit = 0            # No core dump pipes
 kernel.dmesg_restrict = 1             # Only root can read dmesg
@@ -27,7 +27,7 @@ kernel.numa_balancing = 0             # Disable page migration/auto NUMA
 kernel.perf_event_mlock_kb = 1        # Minimal perf event buffer
 kernel.perf_event_paranoid = 3        # No perf monitoring for non-root
 kernel.pid_max = 4194304              # Large PID space to reduce PID reuse predictability (trade: slight kernel memory)
-kernel.printk = 3 3 3 3               # Reduces kernel logging verbosity - good for minimizing leakage into dmesg, journald, or serial consoles
+kernel.printk = 4 4 1 7               # Detail logs. Improves intrusion detection, but not ideal for forensics resistance
 kernel.randomize_va_space = 2         # Full ASLR
 kernel.random.trust_cpu = 0           # Do not trust CPU for randomness
 kernel.sched_child_runs_first = 1     # Minor scheduling tweak; no direct security effect (keeps fork/exec behavior predictable)
@@ -95,25 +95,26 @@ EOF
 
 echo "Creating /etc/sysctl.d/50-overrides.conf"
 sudo tee /etc/sysctl.d/50-overrides.conf > /dev/null <<'EOF'
-# Uncomment this if you've got multiple simultaneous network connections (e.g. WiFi + Ethernet).
+# [ipv4-multiple-connections] Allow simultaneous network connections (e.g. WiFi + Ethernet) over IPv4.
 # net.ipv4.conf.all.rp_filter = 2
 
-# Uncomment to re-enable outbound IPv6 connections
+# [ipv6] Allow IPv6 connections.
 # net.ipv6.conf.all.disable_ipv6 = 0
 # net.ipv6.conf.default.disable_ipv6 = 0
-
-# Uncomment to re-enable local "loopback" IPv6 connections (may help with Chrome/Chromium/VSCode/PostgreSQL issues)
 # net.ipv6.conf.lo.disable_ipv6 = 0
 
-# Uncomment to re-enable modprobe
-# kernel.modprobe=/sbin/modprobe
+# [ipv6-loopback] Allow IPv6 loopback (may help with Chrome/Chromium/VSCode/PostgreSQL issues).
+# net.ipv6.conf.lo.disable_ipv6 = 0
 
-# Uncomment to allow user namespaces (used by Chrome/Chromium/VSCode/Docker/Flatpack/Snap, etc.)
+# [userns] Allow user namespaces (used by Chrome/Chromium/VSCode/Docker/Flatpack/Snap, etc.)
 # kernel.unprivileged_userns_clone = 0
 
-# Uncomment to increasing logging (e.g. to support automatic intrusion detection)
-# kernel.audit_enabled = 1
-# kernel.printk = 4 4 1 7
+# [modprobe] Allow the kernel to load non-blacklisted kernel modules as needed.
+# kernel.modprobe=/sbin/modprobe
+
+# [reduced-logging] Disables a lot of logging.
+# kernel.audit_enabled = 0
+# kernel.printk = 3 3 3 3               
 EOF
 
 echo "Success!"

@@ -42,10 +42,13 @@ It enables networking.
 @ bash
 sudo apt update
 sudo apt install qubes-core-agent-networking
+h0-sysctl enable modprobe
 
 @ paragraph
-You may also want to re-enable IPv6.
-TODO: Come up with easier sysctl framework.
+You may also want to re-enable IPv6. This increases attack surface, but is sometimes useful. This can be done as follows:
+
+@ bash
+h0-sysctl enable ipv6
 
 =========================
 === Set Up The Studio ===
@@ -54,233 +57,15 @@ TODO: Come up with easier sysctl framework.
 @ paragraph
 In the studio, run the following code.
 
-@ paragraph
-It ensures that unwanted services (pertaining to internet, printing, etc.) are consistently re-masked and re-disabled at startup and shutdown.
-
-@ paragraph
-h0-at-startup  h0-mask-and-disable-the-usual-suspects
-h0-at-shutdown h0-mask-and-disable-the-usual-suspects
-
-@ paragraph
-TODO: Come up systematic framework for unmasking when the correct device is passed in.
-Could cover both porch and studio.
+@ bash
+h0-sysctl enable modprobe
 
 =======================
 === Set Up The Ward ===
 =======================
 
 @ paragraph
-Early versions of this guide involved a whole lot of copying and pasting. Scripts were copied from this website and pasted into the terminal.
-
-@ paragraph
-Eventually, I decided this wasn't professional enough. The new approach is to distribute all the scripts you'll need inside a single Debian package called <code>h0</code>. This allows the end-user to update their Hero to Zero scripts a lot more easily, and feels a bit more user-friendly.
-
-@ paragraph
-However, there's still a few scripts you need to paste into your terminal, to get the process started.
-
-@ paragraph
-These scripts are provided on subsequent pages.
-
-==================
-=== Harden APT ===
-==================
-
-@ paragraph
-The code block you're seeing hardens the Advanced Package Manager ("APT") as much as possible.
-
-@ paragraph
-Go ahead and paste it into your <code>dXX</code> terminal, running as root.
+In the ward, run the following code.
 
 @ bash
-#!/usr/bin/env bash
-set -euo pipefail
-
-CODENAME="$(. /etc/os-release; echo "${VERSION_CODENAME:-}")"
-if [[ -z "${CODENAME}" && -x /usr/bin/lsb_release ]]; then
-  CODENAME="$(lsb_release -sc || true)"
-fi
-if [[ -z "${CODENAME}" ]]; then
-  echo "ERROR: Unable to detect Debian codename (e.g., bookworm, bullseye)." >&2
-  exit 1
-fi
-SUITE="${CODENAME}"
-
-echo "Detected Debian codename: ${CODENAME}"
-echo "Using suite: ${SUITE}"
-
-echo "Writing hardened sources.list (HTTPS, ftp.debian.org + security.debian.org, main only, deb-src enabled)"
-cat >/etc/apt/sources.list <<EOF
-deb https://ftp.debian.org/debian ${SUITE} main
-deb-src https://ftp.debian.org/debian ${SUITE} main
-
-deb https://ftp.debian.org/debian ${SUITE}-updates main
-deb-src https://ftp.debian.org/debian ${SUITE}-updates main
-
-deb https://security.debian.org/debian-security ${CODENAME}-security main
-deb-src https://security.debian.org/debian-security ${CODENAME}-security main
-EOF
-
-echo "Enforcing freshness (Valid-Until) and HTTPS checks…"
-cat >/etc/apt/apt.conf.d/99-check-valid-until <<'EOF'
-Acquire::Check-Valid-Until "true";
-Acquire::AllowInsecureRepositories "false";
-Acquire::AllowDowngradeToInsecureRepositories "false";
-Acquire::https::Verify-Peer "true";
-Acquire::https::Verify-Host "true";
-EOF
-
-echo "Setting default release to ${SUITE}…"
-cat >/etc/apt/apt.conf.d/99-default-release <<EOF
-APT::Default-Release "${SUITE}";
-EOF
-
-echo "Installing downgrade guard hook…"
-install -m 0755 -d /usr/local/sbin
-cat >/usr/local/sbin/apt-no-downgrade <<'EOF'
-#!/usr/bin/env bash
-set -euo pipefail
-declare -i violations=0
-while read -r name ver _rest; do
-  if dpkg-query -W -f='${Status}' "$name" 2>/dev/null | grep -q "install ok installed"; then
-    installed="$(dpkg-query -W -f='${Version}' "$name" 2>/dev/null || echo "")"
-    if [[ -n "$installed" ]] && dpkg --compare-versions "$ver" lt "$installed"; then
-      echo "ERROR: Downgrade detected for $name: candidate $ver < installed $installed" >&2
-      violations+=1
-    fi
-  fi
-done
-if (( violations > 0 )); then
-  echo "Aborting due to downgrade(s). Use: apt-get --allow-downgrades … if you really intend this." >&2
-  exit 1
-fi
-EOF
-chmod 0755 /usr/local/sbin/apt-no-downgrade
-
-cat >/etc/apt/apt.conf.d/99-no-downgrade-hook <<'EOF'
-DPkg::Pre-Install-Pkgs { "/usr/local/sbin/apt-no-downgrade"; };
-EOF
-echo "Success!"
-echo "APT hardened with upstream hosts, HTTPS, main-only, Valid-Until enforced, and downgrade guard."
-echo "Note that deb-src was also enabled, for convenience."
-
-===========================================
-=== Trust Hero-to-Zero (If You Dare...) ===
-===========================================
-
-@ paragraph
-As mentioned earlier, most of the Qubes utilities Hero-to-Zero offers are provided via our APT repository.
-
-@ paragraph
-You therefore need to instruct the TemplateVM to trust this repository, to get the scripts.
-
-@ paragraph
-Incidentally, these scripts include a command called <code>h0-untrust-hero-to-zero</code> which undoes the aforementioned changes. Untrusting our repository provides an extra level of safety, and protects against:
-
-@ unordered list
-<li>the risk that the Hero-to-Zero GPG private is somehow stolen by hackers, or</li>
-<li>the risk that Hero-to-Zero is one day served with a court order to the effect that we have to serve vulnerable or malicious scripts</li>
-
-@ paragraph
-On the other hand, it also prevents you from receiving updates from us. Make up your own mind about what's best for you. You can read about our security and risk reduction policies here: <a href="risk-reduction-strategy.html">Risk Reduction Strategy</a>. Either way, you'll need to get our scripts at least once.
-
-@ paragraph
-To get the initial scripts, go ahead and run the following in your <code>dXX</code> root terminal.
-
-@ bash
-# Ensure the keyring directory exists
-sudo install -d -m 0755 /usr/share/keyrings
-
-# Add the Hero-to-Zero repository, bound to our key (flat repo layout)
-ARCH="$(dpkg --print-architecture)"
-echo "deb [arch=${ARCH} signed-by=/usr/share/keyrings/h0-archive-keyring.gpg] https://hero-to-zero.ch/{suite}/apt ./" \
-  | sudo tee /etc/apt/sources.list.d/h0.list >/dev/null
-
-# Embed the ASCII-armored public key and dearmor directly (no temp .asc file)
-sudo gpg --dearmor -o /usr/share/keyrings/h0-archive-keyring.gpg <<'EOF'
-{gpg_key_public}
-EOF
-sudo chmod 0644 /usr/share/keyrings/h0-archive-keyring.gpg
-
-===============================
-=== Install <code>h0</code> ===
-===============================
-
-@ paragraph
-Now that you've trusted our repo, you can install the scripts like so:
-
-@ bash
-apt update
-apt install h0
-
-========================
-=== Install Autopass ===
-========================
-
-@ paragraph
-Most QubesOS users make use of passwordless sudo. This makes installing new software and reconfiguring Linux a breeze for you, but also for a potential attacker. Luckily Hero-to-Zero provides a more reasonable compromise called <em>autopass</em>.
-
-@ paragraph
-Inside TemplateVMs and AppVMs, autopass works exactly like passwordless sudo. However, for DisposableVMs, it works differently. A random password is set at startup, and then piped into <code>sys-password</code> in case you need it later. This gives a security boost to your disposables, while still retaining most of the convenience of passwordless sudo.
-
-@ paragraph
-To enable autopass, run the following command:
-
-@ bash
-h0-autopass-setup
-
-@ paragraph
-In later guides, we'll set up <code>sys-password</code> as the receiver of the temporary passwords emitted by new disposables running autopass. But that's a job for later. For now, we can simply enjoy the passwordless sudo that the aforementioned command gave us.
-
-====================================================
-=== You Can Now Launch Terminals From The Q Menu ===
-====================================================
-
-@ paragraph
-With passwordless sudo now available in TemplateVMs, there's no need to run as root user.
-
-@ paragraph
-This means that, from here onwards, you can launch terminals from the Q menu. They'll have sufficient permissions to do everything you need, without running as root user.
-
-==============================
-=== Harden the File System ===
-==============================
-
-@ bash
-sudo h0-harden-filesystem
-
-=============================================
-=== Harden the OS via <code>sysctl</code> ===
-=============================================
-
-@ bash
-sudo h0-harden-os-via-sysctl
-
-===============================================
-=== Harden the OS via Environment Variables ===
-===============================================
-
-@ bash
-sudo h0-harden-os-via-environment
-
-===================================
-=== Harden the Memory Allocator ===
-===================================
-
-@ bash
-sudo apt update
-sudo apt install hardened-malloc
-hardened-malloc-preload-everywhere enable
-
-==============================
-=== Perform A Full Upgrade ===
-==============================
-
-@ bash
-sudo h0-full-upgrade
-
-=============================
-=== Configure Your Locale ===
-=============================
-
-@ bash
-sudo dpkg-reconfigure locales
+h0-harden-via-aggressive-purge

@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
-# fs_harden_minimal.sh — universal, no options, safe defaults.
+# Hardens every file system it finds:
 # - noatime,lazytime everywhere sensible
 # - nosymfollow only if supported (auto-detect)
 # - nodev,nosuid on "data" mounts (no 'noexec')
-# - ext4 '/' gets errors=remount-ro and commit=60
+# - ext4 '/' gets errors=remount-ro
 # - backs up /etc/fstab, validates, and remounts changed mounts
 
 set -euo pipefail
