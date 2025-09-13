@@ -301,7 +301,7 @@ This step is optional, but strongly recommended.
 It's useful to have a file manager and decent text editor available across the board. Unfortunately, it's hard to find any recommendations that don't also pull in library clusters with large attack surfaces (like GTK and Qt).
 
 @ paragraph
-For the sake of minimalism, I recommend my own software, which is called Zeropad. It provides a file manager, a text editor, and an embedded terminal all in one. It's also genuinely tiny, memory safe, and dependent only on tkinter (which has a much smaller attack surface, as compared with GTK or Qt).
+For the sake of minimalism, I recommend my own software, which is called Zeropad. It provides a file manager, a text editor, and an embedded terminal, all in one program. It's also genuinely tiny, memory safe, and dependent only on tkinter (which has a much smaller attack surface, as compared with GTK or Qt).
 
 @ paragraph
 The following code downloads and installs Zeropad:
