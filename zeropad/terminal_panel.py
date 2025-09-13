@@ -289,7 +289,7 @@ class TerminalPanel:
         if not lines:
             lines.append("xterm/tmux OK.")
         else:
-            lines += ["", "Install on Ubuntu:", "  sudo apt install xterm tmux"]
+            lines += ["", "Install on Debian:", "  sudo apt install xterm tmux"]
         tk.Label(self._term_container, text="\n".join(lines),
                  bg=self._TERM_BG, fg=self._TERM_FG, justify="left")\
           .pack(anchor="nw", padx=12, pady=12)
