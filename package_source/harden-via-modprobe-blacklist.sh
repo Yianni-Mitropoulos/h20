@@ -41,7 +41,7 @@ blacklist parport
 blacklist parport_pc
 
 ###############################################################################
-# Audio (AppVMs don’t need hardware sound)
+# Audio (AppVMs don't need hardware sound)
 blacklist snd_hda_intel
 blacklist snd_hda_codec
 blacklist snd_usb_audio

@@ -271,7 +271,7 @@ sudo h0-harden-via-modprobe-blacklist
 @ bash
 sudo apt update
 sudo apt install hardened-malloc
-hardened-malloc-preload-everywhere enable
+hardened-malloc enable-everywhere
 
 ==============================
 === Perform A Full Upgrade ===

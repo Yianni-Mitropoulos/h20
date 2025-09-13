@@ -147,9 +147,9 @@ exec "$@"
             _tar_add(tf, wrap_name, wrap_sh.encode(), 0o100755)
             filelist.append((wrap_name, wrap_sh.encode()))
 
-        # Optional preload-everywhere toggler: /usr/sbin/<package>-preload-everywhere
+        # Optional preload-everywhere toggler: /usr/sbin/<package>
         if args.preload_tool:
-            tool_name = f"usr/sbin/{args.package}-preload-everywhere"
+            tool_name = f"usr/sbin/{args.package}"
             tool_sh = f"""#!/bin/sh
 # Enable/disable global preloading of {args.package}
 set -eu
@@ -173,7 +173,7 @@ contains_line() {{
   [ -f "$CONF" ] && grep -Fx -- "$LIB" "$CONF" >/dev/null 2>&1
 }}
 
-enable() {{
+enable-everywhere() {{
   need_root
   backup
   mkdir -p "$(dirname "$CONF")"
@@ -190,7 +190,7 @@ enable() {{
   echo "Enabled global preload of: $LIB (in $CONF)"
 }}
 
-disable() {{
+remove-enable-everywhere() {{
   need_root
   [ -f "$CONF" ] || {{ echo "Nothing to disable (no $CONF)"; exit 0; }}
   backup
@@ -216,11 +216,11 @@ status() {{
 }}
 
 case "${{1:-}}" in
-  enable) shift; enable "$@";;
-  disable) shift; disable "$@";;
+  enable-everywhere) shift; enable-everywhere "$@";;
+  remove-enable-everywhere) shift; remove-enable-everywhere "$@";;
   status) shift; status "$@";;
   print-path) echo "$LIB";;
-  *) echo "Usage: $0 {{enable|disable|status|print-path}}" >&2; exit 2;;
+  *) echo "Usage: $0 {{enable-everywhere|remove-enable-everywhere|status|print-path}}" >&2; exit 2;;
 esac
 """
             _tar_add(tf, tool_name, tool_sh.encode(), 0o100755)
