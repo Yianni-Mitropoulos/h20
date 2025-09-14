@@ -208,6 +208,28 @@ class Zeropad(Menus, FilePanel, TextPanel, TerminalPanel, tk.Tk):
                     pass
         self.destroy()
 
+    def request_delete(self, path: Path):
+        """
+        Centralized delete behavior for Zeropad.
+        For now:
+          • If directory: remove recursively (shutil.rmtree)
+          • If file: unlink
+        Later you can replace with trash/shred behavior without touching FilePanel.
+        """
+        import shutil
+
+        p = Path(path).resolve()
+        if not p.exists():
+            raise FileNotFoundError(f"Not found: {p}")
+
+        # If deleting the *current working directory*, move up first to avoid UI conflicts.
+        if hasattr(self, "cwd") and Path(self.cwd).resolve() == p and p.parent.exists():
+            self.set_cwd(p.parent)
+
+        if p.is_dir():
+            shutil.rmtree(p)
+        else:
+            p.unlink()
 
 if __name__ == "__main__":
     app = Zeropad()

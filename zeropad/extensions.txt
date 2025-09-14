@@ -1,0 +1,364 @@
+# ======================================================================
+# Zeropad pragmatic extension → MIME overrides
+# ----------------------------------------------------------------------
+# Rules:
+#   • Leading '.' is optional, but included here for clarity.
+#   • Separator is whitespace (you can also use '=').
+#   • These overrides are consulted BEFORE Gio’s sniffing so empty files
+#     like ".py" are still recognized correctly.
+# ======================================================================
+
+# ---------- Plain text, config, docs ----------
+.txt                text/plain
+.text               text/plain
+.log                text/plain
+.csv                text/csv
+.tsv                text/tab-separated-values
+.ini                text/x-ini
+.conf               text/plain
+.cfg                text/plain
+.properties         text/x-java-properties
+.env                text/plain
+.todo               text/plain
+
+# ---------- Markup / markdown / rich text ----------
+.md                 text/markdown
+.markdown           text/markdown
+.mdown              text/markdown
+.mkd                text/markdown
+.rst                text/x-rst
+.html               text/html
+.htm                text/html
+.xhtml              application/xhtml+xml
+.xml                application/xml
+.xsl                application/xml
+.xsd                application/xml
+
+# ---------- JSON & friends ----------
+.json               application/json
+.json5              application/json
+.jsonl              application/x-ndjson
+.ndjson             application/x-ndjson
+.webmanifest        application/manifest+json
+.map                application/json
+
+# ---------- YAML / TOML ----------
+.yaml               text/yaml
+.yml                text/yaml
+.toml               application/toml
+
+# ---------- Shell / scripting ----------
+.sh                 application/x-shellscript
+.bash               application/x-shellscript
+.zsh                application/x-shellscript
+.ksh                application/x-shellscript
+.fish               text/x-fish
+.ps1                application/x-powershell
+.psm1               application/x-powershell
+.bat                application/x-bat
+.cmd                application/x-bat
+
+# ---------- Python / Jupyter ----------
+.py                 text/x-python
+.pyw                text/x-python
+.pyi                text/x-python
+.ipynb              application/x-ipynb+json
+.pkl                application/x-python-pickle
+.pickle             application/x-python-pickle
+
+# ---------- JavaScript / TypeScript ----------
+.js                 application/javascript
+.cjs                application/javascript
+.mjs                application/javascript
+.jsx                text/jsx
+.ts                 text/x-typescript
+.tsx                text/x-tsx
+.mts                text/x-typescript
+.cts                text/x-typescript
+
+# ---------- Web assets ----------
+.css                text/css
+.scss               text/x-scss
+.sass               text/x-sass
+.less               text/x-less
+.vue                text/x-vue
+.svelte             text/x-svelte
+.handlebars         text/x-handlebars
+.hbs                text/x-handlebars
+.ejs                text/x-ejs
+.twig               text/x-twig
+.mustache           text/x-mustache
+
+# ---------- C / C++ / ObjC ----------
+.c                  text/x-csrc
+.h                  text/x-chdr
+.cpp                text/x-c++src
+.cc                 text/x-c++src
+.cxx                text/x-c++src
+.hpp                text/x-c++hdr
+.hh                 text/x-c++hdr
+.hxx                text/x-c++hdr
+.m                  text/x-objective-c
+.mm                 text/x-objective-c++
+
+# ---------- Other languages ----------
+.cs                 text/x-csharp
+.java               text/x-java
+.kt                 text/x-kotlin
+.kts                text/x-kotlin
+.scala              text/x-scala
+.go                 text/x-go
+.rs                 text/rust
+.rb                 application/x-ruby
+.erb                text/x-eruby
+.php                application/x-php
+.pl                 text/x-perl
+.pm                 text/x-perl
+.t                  text/x-perl
+.lua                text/x-lua
+.hs                 text/x-haskell
+.lhs                text/x-haskell
+.ml                 text/x-ocaml
+.mli                text/x-ocaml
+.mll                text/x-ocaml
+.mly                text/x-ocaml
+.ex                 text/x-elixir
+.exs                text/x-elixir
+.R                  text/x-rsrc
+.r                  text/x-rsrc
+.Rmd                text/markdown
+.jl                 text/x-julia
+.sql                application/sql
+.psql               application/sql
+.twig               text/x-twig
+
+# ---------- Data science / DB / scientific ----------
+.sqlite             application/x-sqlite3
+.sqlite3            application/x-sqlite3
+.db                 application/x-sqlite3
+.parquet            application/vnd.apache.parquet
+.avro               application/avro
+.orc                application/vnd.apache.orc
+.arrow              application/vnd.apache.arrow.file
+.feather            application/vnd.apache.feather
+.h5                 application/x-hdf5
+.hdf5               application/x-hdf5
+.npy                application/x-numpy
+.npz                application/x-numpy-archive
+
+# ---------- Diff / patches ----------
+.diff               text/x-diff
+.patch              text/x-diff
+
+# ---------- TeX / LaTeX / BibTeX ----------
+.tex                text/x-tex
+.sty                text/x-tex
+.cls                text/x-tex
+.bib                text/x-bibtex
+
+# ---------- Fonts ----------
+.ttf                font/ttf
+.otf                font/otf
+.woff               font/woff
+.woff2              font/woff2
+
+# ---------- Images ----------
+.png                image/png
+.apng               image/apng
+.jpg                image/jpeg
+.jpeg               image/jpeg
+.jxl                image/jxl
+.gif                image/gif
+.webp               image/webp
+.bmp                image/bmp
+.tif                image/tiff
+.tiff               image/tiff
+.heic               image/heic
+.heif               image/heif
+.avif               image/avif
+.ico                image/vnd.microsoft.icon
+.icns               image/icns
+.svg                image/svg+xml
+.ai                 application/illustrator
+.eps                application/postscript
+.ps                 application/postscript
+.raw                application/octet-stream
+.cr2                image/x-canon-cr2
+.cr3                image/x-canon-cr3
+.nef                image/x-nikon-nef
+.arw                image/x-sony-arw
+.rw2                image/x-panasonic-rw2
+.dng                image/x-adobe-dng
+
+# ---------- Audio ----------
+.mp3                audio/mpeg
+.flac               audio/flac
+.wav                audio/wav
+.ogg                audio/ogg
+.opus               audio/opus
+.m4a                audio/mp4
+.aac                audio/aac
+.wma                audio/x-ms-wma
+.aiff               audio/aiff
+.aif                audio/aiff
+.m3u                audio/x-mpegurl
+.m3u8               application/vnd.apple.mpegurl
+.pls                audio/x-scpls
+
+# ---------- Video ----------
+.mp4                video/mp4
+.m4v                video/mp4
+.webm               video/webm
+.mkv                video/x-matroska
+.mov                video/quicktime
+.avi                video/x-msvideo
+.mpg                video/mpeg
+.mpeg               video/mpeg
+.wmv                video/x-ms-wmv
+.flv                video/x-flv
+.ts                 video/mp2t
+
+# ---------- Subtitles ----------
+.srt                application/x-subrip
+.vtt                text/vtt
+.ass                text/x-ssa
+.ssa                text/x-ssa
+
+# ---------- Archives / compression ----------
+.zip                application/zip
+.jar                application/java-archive
+.war                application/java-archive
+.tar                application/x-tar
+.tgz                application/x-compressed-tar
+.tbz                application/x-bzip-compressed-tar
+.tbz2               application/x-bzip-compressed-tar
+.txz                application/x-xz-compressed-tar
+.tzst               application/x-zstd-compressed-tar
+.7z                 application/x-7z-compressed
+.rar                application/vnd.rar
+.gz                 application/gzip
+.bz2                application/x-bzip2
+.xz                 application/x-xz
+.zst                application/zstd
+.lz4                application/x-lz4
+.br                 application/x-brotli
+
+# ---------- Packages / installers ----------
+.deb                application/vnd.debian.binary-package
+.rpm                application/x-rpm
+.apk                application/vnd.android.package-archive
+.appimage           application/x-appimage
+.msi                application/x-msi
+.whl                application/vnd.python.wheel
+.gem                application/x-ruby-gem
+.nupkg              application/zip
+
+# ---------- Disk images ----------
+.iso                application/x-iso9660-image
+.dmg                application/x-apple-diskimage
+.img                application/octet-stream
+.vdi                application/x-virtualbox-vdi
+.vmdk               application/x-vmdk
+.qcow               application/x-qcow
+.qcow2              application/x-qcow2
+
+# ---------- Executables / libs ----------
+.exe                application/x-msdownload
+.dll                application/x-msdownload
+.sys                application/octet-stream
+.so                 application/x-sharedlib
+.dylib              application/x-mach-o
+.o                  application/x-object
+.wasm               application/wasm
+
+# ---------- Office / PDF / OpenDocument ----------
+.pdf                application/pdf
+.doc                application/msword
+.dot                application/msword
+.docx               application/vnd.openxmlformats-officedocument.wordprocessingml.document
+.dotx               application/vnd.openxmlformats-officedocument.wordprocessingml.template
+.xls                application/vnd.ms-excel
+.xlt                application/vnd.ms-excel
+.xlsx               application/vnd.openxmlformats-officedocument.spreadsheetml.sheet
+.xltx               application/vnd.openxmlformats-officedocument.spreadsheetml.template
+.xlsm               application/vnd.ms-excel.sheet.macroEnabled.12
+.ppt                application/vnd.ms-powerpoint
+.pot                application/vnd.ms-powerpoint
+.pptx               application/vnd.openxmlformats-officedocument.presentationml.presentation
+.potx               application/vnd.openxmlformats-officedocument.presentationml.template
+.ppsx               application/vnd.openxmlformats-officedocument.presentationml.slideshow
+.odt                application/vnd.oasis.opendocument.text
+.ods                application/vnd.oasis.opendocument.spreadsheet
+.odp                application/vnd.oasis.opendocument.presentation
+.odg                application/vnd.oasis.opendocument.graphics
+.rtf                application/rtf
+
+# ---------- Calendars / email ----------
+.ics                text/calendar
+.vcf                text/vcard
+.vcard              text/vcard
+.eml                message/rfc822
+.msg                application/vnd.ms-outlook
+
+# ---------- Certificates / crypto / keys ----------
+.pem                application/x-pem-file
+.cer                application/x-x509-ca-cert
+.crt                application/x-x509-ca-cert
+.der                application/x-x509-ca-cert
+.p7b                application/x-pkcs7-certificates
+.p7c                application/x-pkcs7-mime
+.p12                application/x-pkcs12
+.pfx                application/x-pkcs12
+.csr                application/pkcs10
+.asc                application/pgp-keys
+.gpg                application/pgp-encrypted
+.sig                application/pgp-signature
+.pub                application/ssh-public-key
+.sshconfig          text/plain
+.known_hosts        text/plain
+
+# ---------- Docker / containers / orchestration ----------
+.dockerignore       text/plain
+.containerignore    text/plain
+.compose.yaml       text/yaml
+.compose.yml        text/yaml
+
+# ---------- Apple / macOS specific ----------
+.nib                application/octet-stream
+.strings            text/plain
+.mobileconfig       application/x-apple-aspen-config
+
+# ---------- Windows specific ----------
+.reg                text/plain
+.ink                application/octet-stream
+
+# ---------- Desktop entries / shortcuts ----------
+.desktop            application/x-desktop
+.url                text/uri-list
+
+# ---------- 3D / CAD / GIS ----------
+.obj                model/obj
+.stl                model/stl
+.fbx                application/octet-stream
+.gltf               model/gltf+json
+.glb                model/gltf-binary
+.step               application/step
+.stp                application/step
+.dae                model/vnd.collada+xml
+.kml                application/vnd.google-earth.kml+xml
+.kmz                application/vnd.google-earth.kmz
+.geojson            application/geo+json
+.gpkg               application/geopackage+sqlite3
+.shp                application/x-esri-shapefile
+.sbn                application/octet-stream
+.sbx                application/octet-stream
+.prj                text/plain
+.dbf                application/dbf
+
+# ---------- Logs / miscellaneous ----------
+.out                text/plain
+.err                text/plain
+.todo.txt           text/plain
+.licenses           text/plain
+.license            text/plain
+.changelog          text/plain

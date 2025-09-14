@@ -3,21 +3,32 @@ FILE PANEL (Zeropad)
 
 COLUMN WIDTH MODEL — READ THIS BEFORE EDITING:
 
-Each column has a persistent *target width ratio* in [0..1] stored in `self._col_ratio`.
-When rendering, the actual pixel width of each *visible* column is:
+We use a FIXED-WIDTH model for columns with a single FLEX column for the filename.
 
-    px(col) = (target_ratio(col) / sum_of_target_ratios_of_visible_cols) * treeview_pixel_width
+- Each non-filename column has a persistent desired pixel width stored in `self._col_target_px[col]`.
+- Each column also has a min and a max width (`_col_min_px`, `_col_max_px_base` plus dynamic caps).
+- Exactly ONE column is the “flex” (expanding) column:
+    • If Type is ON  → 'name' is the filename column and is the flex column.
+    • If Type is OFF → '#0' shows the filename and becomes the flex column.
+- Layout:
+    1) Clamp each FIXED (non-filename) column to [min..max] and sum them.
+    2) Flex column width = remaining pixels, clamped to its min (no max; it can grow indefinitely).
+- When the user drags a separator, we update ONLY that fixed column’s target width. The flex column is
+  recomputed automatically.
 
-This guarantees columns:
-  • Fill the full width of the tree,
-  • Keep their relative proportions stable across refreshes, sorts, and directory changes,
-  • Remember their size even when temporarily hidden.
+EXTENSION → MIME OVERRIDES:
 
-The ONLY time target ratios are updated is when the user manually resizes a column
-by dragging a header separator. We detect that with <ButtonPress-1>/<ButtonRelease-1>
-and reading `identify_region(...) == "separator"` to know it's a resize gesture.
+We load a pragmatic mapping from a file named `extensions.txt` (optional). Format:
 
-DO NOT update ratios on sort, refresh, or directory change — that will cause width drift.
+    # comments and blank lines allowed
+    .py   text/x-python
+    py    text/x-python
+    .mjs  application/javascript
+    jsx = text/javascript
+
+Separator can be whitespace or '='. Leading '.' on extension is optional.
+
+Overrides are preferred over GIO content guessing (fixes empty .py → text/x-python).
 """
 
 import os
@@ -28,8 +39,9 @@ import tkinter.font as tkfont
 from tkinter import ttk, messagebox
 from pathlib import Path
 from datetime import datetime
+from typing import Optional, Tuple, Dict, List
 
-# ---- safety utils (your file) ----
+# ---- safety utils (project file) ----
 from string_safety_utils import (
     bad_filename_check,
     bad_filename_sanitize,
@@ -37,8 +49,23 @@ from string_safety_utils import (
     deceptive_line_sanitize,
 )
 
+# ---- Optional GIO + GdkPixbuf (no GTK) ----
+try:
+    import gi
+    gi.require_version("Gio", "2.0")
+    gi.require_version("GdkPixbuf", "2.0")
+    from gi.repository import Gio, GdkPixbuf
+    _HAS_GIO = True
+    _HAS_GDKPB = True
+except Exception:
+    Gio = None            # type: ignore
+    GdkPixbuf = None      # type: ignore
+    _HAS_GIO = False
+    _HAS_GDKPB = False
 
 class FilePanel:
+    # ---------------- init & UI ----------------
+
     def init_file_panel(self):
         """Build the left File panel with three vertically stacked subpanels."""
         palette = getattr(self, "_palette", {})
@@ -53,6 +80,9 @@ class FilePanel:
         self._ACC_BG_H = "#3b82f6"
         self._ACC_BG_D = "#0b1220"
         self._ERR_RED  = "#ef4444"
+
+        # Load ext overrides from extensions.txt (if present)
+        self._ext_overrides = self._load_ext_overrides()
 
         # Root frame for the file panel
         self.fm = tk.Frame(self.hpaned, bg=self._BG_PANEL)
@@ -90,7 +120,7 @@ class FilePanel:
                   background=[("active", self._BTN_BG_H), ("pressed", self._BTN_BG_H)],
                   foreground=[("active", self._FG_TEXT), ("pressed", self._FG_TEXT)])
 
-        # ---------- Subpanel 1: Show Hiddens + Up + Home ----------
+        # ---------- Subpanel 1: toggles + nav ----------
         topbar = tk.Frame(self.fm, bg=self._BG_PANEL)
         topbar.pack(side="top", fill="x")
 
@@ -98,6 +128,12 @@ class FilePanel:
         ttk.Checkbutton(topbar, text="Show Hiddens", variable=self.show_hidden,
                         command=self._on_show_hidden, style="NoHover.TCheckbutton",
                         takefocus=False).pack(side="left", padx=(8, 6), pady=6)
+
+        # Use MIME types (auto-on if libs present)
+        self.use_mime_types = tk.BooleanVar(value=(_HAS_GIO and _HAS_GDKPB))
+        ttk.Checkbutton(topbar, text="Use MIME Types", variable=self.use_mime_types,
+                        command=self._on_toggle_mime, style="NoHover.TCheckbutton",
+                        takefocus=False).pack(side="left", padx=(0, 12), pady=6)
 
         self.up_btn = ttk.Button(topbar, text="Up", style="Toolbar.TButton", command=self._go_up)
         self.up_btn.pack(side="left", padx=(0, 6), pady=6)
@@ -112,81 +148,83 @@ class FilePanel:
         self.tree = ttk.Treeview(middle, show="tree headings", selectmode="browse")
         self.tree.pack(side="left", fill="both", expand=True)
 
-        # Headings clicks for sorting
-        self.tree.heading("#0", text="Kind", command=lambda: self._on_heading_click("#0"))
-
         # Bold font for "Create New" rows
         base = tkfont.nametofont("TkDefaultFont")
         self._bold_font = tkfont.Font(self, family=base.cget("family"),
                                       size=base.cget("size"), weight="bold")
         self.tree.tag_configure("bold", font=self._bold_font)
 
-        # Column width ratios (0..1) including the narrow safety column "safe"
-        self._col_ratio = {
-            "#0": 0.40,     # Kind (or Filename when Kind hidden)
-            "name": 0.40,   # Filename (when Kind visible)
-            "safe": 0.06,   # centered safety indicator column
-            "size": 0.25,
-            "modified": 0.25,
-            "mode": 0.10,
+        # --- Width model: desired pixel widths (only filename flexes) ---
+        self._col_target_px: Dict[str, int] = {
+            "#0":       120,  # kind text OR filename (when Type OFF). Capped to 40px in icon mode.
+            "name":     260,  # filename (when Type ON) — this FLEXes
+            "safe":      28,  # '!' column — narrow, centered
+            "size":     110,
+            "modified": 180,
+            "mode":      90,
         }
-        self._col_min_px = {"#0": 90, "name": 150, "safe": 28, "size": 90, "modified": 140, "mode": 70}
+        self._col_min_px: Dict[str, int] = {
+            "#0": 56, "name": 120, "safe": 28, "size": 80, "modified": 140, "mode": 70
+        }
+        self._col_max_px_base: Dict[str, int] = {
+            "#0": 240, "name": 10_000, "safe": 28, "size": 220, "modified": 280, "mode": 120
+        }
 
-        # === Column resize detection (update ratios only on real separator drags) ===
         self._resizing_col = False
+        self._resized_col: Optional[str] = None
         self.tree.bind("<ButtonPress-1>", self._on_tree_press, add="+")
         self.tree.bind("<ButtonRelease-1>", self._on_tree_release, add="+")
-        # Re-apply pixel widths from ratios on size changes
-        self.tree.bind("<Configure>", lambda _e: self._apply_pixels_from_ratios())
+        self.tree.bind("<Configure>", lambda _e: self._apply_fixed_widths())
 
         self.tree.bind("<<TreeviewSelect>>", self._on_tree_select)
         self.tree.bind("<Double-1>", self._on_tree_double_click)
 
         # Map item_id -> dict(path=Path, kind='dir'|'file'|'create_dir'|'create_file', role='...')
-        self._node = {}
+        self._node: Dict[str, Dict] = {}
 
         # Sorting state
-        self._sort_key = "name"
+        self._sort_key = "#0"   # start on Type column
         self._sort_desc = False
         self._last_cwd: Path | None = None
 
-        # ---------- Subpanel 3: Metadata + visibility checkboxes ----------
+        # MIME cache (path -> (mime, icon_name))
+        self._mime_cache: Dict[Path, Tuple[Optional[str], Optional[str]]] = {}
+
+        # ---------- Subpanel 3: Metadata + visibility ----------
         bottom = tk.Frame(self.fm, bg=self._BG_PANEL)
         bottom.pack(side="top", fill="x")
 
         form = tk.Frame(bottom, bg=self._BG_PANEL, highlightthickness=0, bd=0)
         form.pack(side="top", fill="x", padx=8, pady=(8, 6))
-        form.grid_columnconfigure(2, weight=1)
-        form.grid_columnconfigure(3, weight=0, minsize=24)  # small column for safety glyph
+        form.grid_columnconfigure(1, weight=1)
+        form.grid_columnconfigure(2, minsize=24)
 
         # Column visibility toggles
-        self.col_kind     = tk.BooleanVar(value=False)  # hidden by default
-        self.col_name     = tk.BooleanVar(value=True)   # not toggleable in UI
+        self.col_type     = tk.BooleanVar(value=True)   # unified Type
+        self.col_name     = tk.BooleanVar(value=True)   # Filename column (shown only when Type ON)
         self.col_size     = tk.BooleanVar(value=True)
         self.col_modified = tk.BooleanVar(value=False)
         self.col_mode     = tk.BooleanVar(value=False)
 
-        # Row 0: Kind
-        ttk.Checkbutton(form, variable=self.col_kind, text="Kind",
-                        command=self._apply_tree_columns,
-                        style="NoHover.TCheckbutton", takefocus=False)\
-            .grid(row=0, column=0, sticky="w", padx=(0, 6))
-        self.meta_kind = tk.Label(form, anchor="w", bg=self._BG_PANEL, fg=self._FG_TEXT)
-        self.meta_kind.grid(row=0, column=2, sticky="ew", pady=2)
+        # Row 0: Type (unified)
+        self._row0_left  = tk.Frame(form, bg=self._BG_PANEL)
+        self._row0_value = tk.Frame(form, bg=self._BG_PANEL)
+        self._row0_left.grid(row=0, column=0, sticky="w", padx=(0, 6))
+        self._row0_value.grid(row=0, column=1, sticky="ew", pady=2)
+        self._update_row0_mode_ui()  # builds controls depending on MIME availability
 
-        # Row 1: Filename (non-toggleable)
-        fn_frame = tk.Frame(form, bg=self._BG_PANEL)
-        fn_frame.grid(row=1, column=0, sticky="w", padx=(0, 6))
-        ttk.Checkbutton(fn_frame, variable=self.col_name, text="Filename",
+        # Row 1: Filename (label disabled + entry + safety glyph)
+        fn_label_wrap = tk.Frame(form, bg=self._BG_PANEL)
+        fn_label_wrap.grid(row=1, column=0, sticky="w", padx=(0, 6))
+        ttk.Checkbutton(fn_label_wrap, variable=self.col_name, text="Filename",
                         style="NoHover.TCheckbutton", takefocus=False, state="disabled").pack(anchor="w")
 
         self.meta_filename = tk.Entry(form, bg=self._BG_ENTRY, fg=self._FG_TEXT,
                                       insertbackground=self._FG_TEXT, relief="flat")
-        self.meta_filename.grid(row=1, column=2, sticky="ew", pady=2)
+        self.meta_filename.grid(row=1, column=1, sticky="ew", pady=2)
 
-        # Safety glyph next to filename entry (🙂 safe; ☹ unsafe)
         self.meta_fname_flag = tk.Label(form, text="🙂", bg=self._BG_PANEL, fg=self._FG_TEXT, cursor="hand2")
-        self.meta_fname_flag.grid(row=1, column=3, sticky="e", padx=(6, 0))
+        self.meta_fname_flag.grid(row=1, column=2, sticky="e", padx=(6, 0))
         self.meta_fname_flag.bind("<Button-1>", lambda _e: self._on_meta_flag_clicked())
 
         # Row 2: Size
@@ -195,7 +233,7 @@ class FilePanel:
                         style="NoHover.TCheckbutton", takefocus=False)\
             .grid(row=2, column=0, sticky="w", padx=(0, 6))
         self.meta_size = tk.Label(form, anchor="w", bg=self._BG_PANEL, fg=self._FG_TEXT)
-        self.meta_size.grid(row=2, column=2, sticky="ew", pady=2)
+        self.meta_size.grid(row=2, column=1, sticky="ew", pady=2)
 
         # Row 3: Modified
         ttk.Checkbutton(form, variable=self.col_modified, text="Modified",
@@ -204,7 +242,7 @@ class FilePanel:
             .grid(row=3, column=0, sticky="w", padx=(0, 6))
         self.meta_modified = tk.Entry(form, bg=self._BG_ENTRY, fg=self._FG_TEXT,
                                       insertbackground=self._FG_TEXT, relief="flat")
-        self.meta_modified.grid(row=3, column=2, sticky="ew", pady=2)
+        self.meta_modified.grid(row=3, column=1, sticky="ew", pady=2)
 
         # Row 4: Mode
         ttk.Checkbutton(form, variable=self.col_mode, text="Mode",
@@ -213,33 +251,77 @@ class FilePanel:
             .grid(row=4, column=0, sticky="w", padx=(0, 6))
         self.meta_mode = tk.Entry(form, bg=self._BG_ENTRY, fg=self._FG_TEXT,
                                   insertbackground=self._FG_TEXT, relief="flat")
-        self.meta_mode.grid(row=4, column=2, sticky="ew", pady=2)
+        self.meta_mode.grid(row=4, column=1, sticky="ew", pady=2)
 
-        # Buttons
+        # Buttons (Delete | Cancel | Accept)
         btns = tk.Frame(bottom, bg=self._BG_PANEL)
         btns.pack(side="top", fill="x", padx=8, pady=(0, 8))
         self.accept_btn = ttk.Button(btns, text="Accept", command=self._on_accept, style="Primary.TButton")
         self.cancel_btn = ttk.Button(btns, text="Cancel", command=self._on_cancel, style="Secondary.TButton")
+        self.delete_btn = ttk.Button(btns, text="Delete", command=self._on_delete, style="Secondary.TButton")
         self.accept_btn.pack(side="right")
         self.cancel_btn.pack(side="right", padx=(0, 8))
+        self.delete_btn.pack(side="left")
         self._set_accept_enabled(False)
 
-        # Selection + originals for dirty tracking and create mode
+        # Selection tracking
         self._selected_path: Path | None = None
         self._meta_original = {"filename": "", "modified": "", "mode": ""}
         self._create_mode: str | None = None  # None | "dir" | "file"
 
-        # Dirty tracking + dynamic safety glyph for filename entry
+        # Live-edit dirty tracking and safety glyph updates
         for w in (self.meta_filename, self.meta_modified, self.meta_mode):
             w.bind("<KeyRelease>", self._on_meta_edited)
 
-        # First-time column config
+        # Image cache for icons
+        self._img_cache: dict[str, tk.PhotoImage] = {}
+
+        # Build columns & rows
         self._apply_tree_columns()
 
-    # ------------------- Safety icons & helpers -------------------
+    # ---------------- MIME toggle & Row0 ----------------
+
+    def _mime_enabled(self) -> bool:
+        return bool(self.use_mime_types.get() and _HAS_GIO and _HAS_GDKPB)
+
+    def _on_toggle_mime(self):
+        if self.use_mime_types.get():
+            if not (_HAS_GIO and _HAS_GDKPB):
+                messagebox.showwarning(
+                    "MIME Support Unavailable",
+                    "GIO/GdkPixbuf not found.\n\nInstall on Debian/Ubuntu:\n"
+                    "  sudo apt install python3-gi gir1.2-gio-2.0 gir1.2-gdkpixbuf-2.0\n"
+                    "  sudo apt install librsvg2-common shared-mime-info hicolor-icon-theme\n"
+                    "  # (optional) xdg-utils\n"
+                )
+                self.use_mime_types.set(False)
+                return
+        self._mime_cache.clear()
+        self._update_row0_mode_ui()
+        self._apply_tree_columns()
+
+    def _update_row0_mode_ui(self):
+        for w in self._row0_left.winfo_children():
+            w.destroy()
+        for w in self._row0_value.winfo_children():
+            w.destroy()
+
+        ttk.Checkbutton(self._row0_left, variable=self.col_type, text="Type",
+                        command=self._apply_tree_columns,
+                        style="NoHover.TCheckbutton", takefocus=False).pack(anchor="w")
+
+        if self._mime_enabled():
+            self.meta_icon_img = tk.Label(self._row0_value, bg=self._BG_PANEL)
+            self.meta_icon_img.pack(side="left", padx=(0, 8))
+            self.meta_mime_text = tk.Label(self._row0_value, anchor="w", bg=self._BG_PANEL, fg=self._FG_TEXT)
+            self.meta_mime_text.pack(side="left", fill="x", expand=True)
+        else:
+            self.meta_kind_value = tk.Label(self._row0_value, anchor="w", bg=self._BG_PANEL, fg=self._FG_TEXT)
+            self.meta_kind_value.pack(side="left", fill="x", expand=True)
+
+    # ---------------- Safety helpers ----------------
 
     def _filename_issues(self, name: str):
-        """Collect issues from both checkers (aggressive for deceptive_line_check)."""
         issues = []
         for _i, msg in deceptive_line_check(name, low_aggression=False):
             issues.append(msg)
@@ -248,304 +330,209 @@ class FilePanel:
         return issues
 
     def _is_name_safe(self, name: str) -> bool:
-        # UI rule: empty string is considered "fine" for display
         return (name is None) or (name == "") or (len(self._filename_issues(name)) == 0)
 
     def _tree_safety_icon(self, name: str) -> str:
-        """Icon for Subpanel 2 '!' column: empty if safe, ☹ if not."""
         return "" if self._is_name_safe(name) else "☹"
 
     def _meta_safety_icon(self, name: str) -> str:
-        """Icon for Subpanel 3 next to the Filename entry: 🙂 if safe, ☹ if not."""
         return "🙂" if self._is_name_safe(name) else "☹"
 
-    # ------------------- Column model -------------------
+    # ---------------- Column model ----------------
 
-    def _visible_cols(self):
-        """Visible columns in UI order. '#0' is always present; include 'safe' after filename."""
+    def _visible_cols(self) -> List[str]:
+        """
+        Visible columns in UI order.
+        • Type ON  : '#0' (icon/kind), 'name', 'safe', ...
+        • Type OFF : '#0' (filename), 'safe', ...
+        """
         cols = ["#0"]
-        if self.col_kind.get():
+        if self.col_type.get():
             cols += ["name", "safe"]
         else:
-            cols += ["safe"]  # when Kind hidden, '#0' shows Filename; still include 'safe'
+            cols += ["safe"]
         if self.col_size.get():     cols.append("size")
         if self.col_modified.get(): cols.append("modified")
         if self.col_mode.get():     cols.append("mode")
         return cols
 
     def _tree_columns(self):
-        """Return (data_columns, headings). Does not include '#0'."""
-        cols = []
-        heads = {}
-        if self.col_kind.get():
+        cols, heads = [], {}
+        if self.col_type.get():
             cols += ["name", "safe"]; heads["name"] = "Filename"; heads["safe"] = "!"
         else:
-            cols += ["safe"]; heads["safe"] = "!"
-        if self.col_size.get():
-            cols.append("size");     heads["size"] = "Size"
-        if self.col_modified.get():
-            cols.append("modified"); heads["modified"] = "Modified"
-        if self.col_mode.get():
-            cols.append("mode");     heads["mode"] = "Mode"
+            cols += ["safe"];         heads["safe"] = "!"
+        if self.col_size.get():     cols.append("size");     heads["size"] = "Size"
+        if self.col_modified.get(): cols.append("modified"); heads["modified"] = "Modified"
+        if self.col_mode.get():     cols.append("mode");     heads["mode"] = "Mode"
         return cols, heads
 
     def _apply_tree_columns(self):
-        """Reconfigure columns (headings, widths) and refresh rows; DO NOT change ratios here."""
         cols, heads = self._tree_columns()
         self.tree.configure(columns=cols)
 
-        # Headings + sort handlers (no sorting on the safety "!" column)
-        self.tree.heading("#0", text=self._sort_label_for("#0"), command=lambda: self._on_heading_click("#0"))
+        # #0 heading (empty label for icon column, triangles still shown)
+        self.tree.heading("#0", text=self._sort_label_for("#0"), anchor="center",
+                          command=lambda: self._on_heading_click("#0"))
         for c in ("name", "safe", "size", "modified", "mode"):
             if c not in cols:
                 continue
             if c == "safe":
-                self.tree.heading(c, text=heads.get(c, "!"))
+                self.tree.heading(c, text=heads.get(c, "!"), anchor="center")
                 continue
-            label = self._sort_label_for(c)
-            self.tree.heading(c, text=label, command=lambda col=c: self._on_heading_click(col))
+            self.tree.heading(c, text=self._sort_label_for(c), command=lambda col=c: self._on_heading_click(col))
 
-        # Apply widths from ratios (fill full width)
-        self._apply_pixels_from_ratios()
-
-        # Rebuild rows (keep sort & selection)
+        self._apply_fixed_widths()
         self.refresh_file_panel()
 
-    def _apply_pixels_from_ratios(self):
-        """Compute pixel widths from ratios so visible columns fill the full width (respect mins)."""
+    def _filename_flex_col(self) -> str:
+        return "name" if self.col_type.get() else "#0"
+
+    def _dynamic_max_caps(self) -> Dict[str, int]:
+        caps = dict(self._col_max_px_base)
+        if self.col_type.get() and self._mime_enabled():
+            caps["#0"] = 40  # icon column
+        else:
+            if not self.col_type.get():
+                caps["#0"] = 10_000  # #0 is filename → allow growth
+        caps[self._filename_flex_col()] = 10_000_000  # filename flex column
+        return caps
+
+    def _apply_fixed_widths(self):
         vis = self._visible_cols()
         if not vis:
             return
         tree_w = max(self.tree.winfo_width(), 1)
         if tree_w <= 2:
-            self.tree.after(16, self._apply_pixels_from_ratios)
+            self.tree.after(16, self._apply_fixed_widths)
             return
 
-        for c in ["#0", "name", "safe", "size", "modified", "mode"]:
-            self._col_ratio.setdefault(c, 1.0 / 3.0)
+        caps = self._dynamic_max_caps()
+        flex = self._filename_flex_col()
 
-        vis_sum = sum(self._col_ratio.get(c, 0.0) for c in vis)
-        if vis_sum <= 0:
-            equal = 1.0 / float(len(vis))
-            for c in vis:
-                self._col_ratio[c] = equal
-            vis_sum = 1.0
-
-        px = []
+        fixed_sum = 0
+        col_widths: Dict[str, int] = {}
         for c in vis:
-            r = self._col_ratio.get(c, 0.0) / vis_sum
-            w = int(round(r * tree_w))
-            w = max(self._col_min_px.get(c, 50), w)
-            px.append(w)
+            if c == flex:
+                continue
+            tgt = self._col_target_px.get(c, self._col_min_px.get(c, 50))
+            w = max(self._col_min_px.get(c, 50), min(caps.get(c, 10_000), int(tgt)))
+            col_widths[c] = w
+            fixed_sum += w
 
-        diff = tree_w - sum(px)
-        if px:
-            px[-1] += diff
+        remain = tree_w - fixed_sum
+        flex_min = self._col_min_px.get(flex, 80)
+        flex_w = max(flex_min, remain)
+        col_widths[flex] = flex_w
 
-        for c, w in zip(vis, px):
-            # '#0' and 'name' left; 'safe' centered; others left
-            if c in ("#0", "name"):
-                anchor = "w"
+        for c in vis:
+            if c == "#0":
+                anchor = "center" if (self.col_type.get() and self._mime_enabled()) else "w"
             elif c == "safe":
                 anchor = "center"
             else:
                 anchor = "w"
-            self.tree.column(c if c != "#0" else "#0", width=max(1, w), stretch=True, anchor=anchor)
+            self.tree.column(c, width=max(1, col_widths[c]), stretch=True, anchor=anchor)
 
-        # Park hidden data columns to a sane min (not visible; doesn't affect ratios)
+        # Park hidden data columns
         for c in ("name", "safe", "size", "modified", "mode"):
             if c not in self.tree["columns"]:
                 continue
             if c not in vis:
                 self.tree.column(c, width=self._col_min_px.get(c, 50), stretch=False, anchor="w")
 
-    # === User resize detection → update target ratios ===
-
+    # --- capture user resize to update fixed target widths
     def _on_tree_press(self, event):
-        region = self.tree.identify_region(event.x, event.y)
-        self._resizing_col = (region == "separator")
-
-    def _on_tree_release(self, event):
+        self._resizing_col = (self.tree.identify_region(event.x, event.y) == "separator")
+        self._resized_col = None
         if self._resizing_col:
-            self._update_ratios_from_visible_pixels()
+            col_id = self.tree.identify_column(event.x)  # '#0', '#1', ...
+            vis = self._visible_cols()
+            if col_id == "#0":
+                self._resized_col = "#0"
+            else:
+                try:
+                    idx = int(col_id.replace("#", "")) - 1
+                    if 0 <= idx < len(self.tree["columns"]):
+                        self._resized_col = self.tree["columns"][idx]
+                except Exception:
+                    self._resized_col = None
+
+    def _on_tree_release(self, _event):
+        if self._resizing_col:
+            vis = self._visible_cols()
+            flex = self._filename_flex_col()
+            if self._resized_col in vis and self._resized_col != flex:
+                try:
+                    cur = int(self.tree.column(self._resized_col, option="width"))
+                    caps = self._dynamic_max_caps()
+                    cur = max(self._col_min_px.get(self._resized_col, 50),
+                              min(caps.get(self._resized_col, 10_000), cur))
+                    self._col_target_px[self._resized_col] = cur
+                except Exception:
+                    pass
+            self._apply_fixed_widths()
         self._resizing_col = False
+        self._resized_col = None
 
-    def _update_ratios_from_visible_pixels(self):
-        """After a real resize gesture, convert current visible pixels to target ratios."""
-        vis = self._visible_cols()
-        if not vis:
-            return
-        widths = []
-        for c in vis:
-            try:
-                w = int(self.tree.column(c if c != "#0" else "#0", option="width"))
-            except Exception:
-                w = 1
-            widths.append(max(1, w))
-        total = sum(widths) or 1
-        for c, w in zip(vis, widths):
-            self._col_ratio[c] = w / total
-        # Re-apply to remove rounding creep
-        self._apply_pixels_from_ratios()
-
-    # ------------------- Rendering & stable sorting -------------------
+    # ---------------- Sorting ----------------
 
     def _on_show_hidden(self):
         self.refresh_file_panel()
 
-    def refresh_file_panel(self):
-        """Re-render the tree; preserves selection and column sizing."""
-        cols, heads = self._tree_columns()
-        self.tree.configure(columns=cols)
-
-        self.tree.heading("#0", text=self._sort_label_for("#0"), command=lambda: self._on_heading_click("#0"))
-        for c in ("name", "safe", "size", "modified", "mode"):
-            if c in cols:
-                if c == "safe":
-                    self.tree.heading(c, text=heads.get(c, "!"))
-                else:
-                    self.tree.heading(c, text=self._sort_label_for(c),
-                                      command=lambda col=c: self._on_heading_click(col))
-
-        self._apply_pixels_from_ratios()
-
-        cwd_changed = (self._last_cwd is None) or (self.cwd != self._last_cwd)
-        self._last_cwd = self.cwd
-
-        selected_before = self._selected_path
-        rank_dirs, rank_files = self._current_order_ranks()
-
-        self.tree.delete(*self.tree.get_children())
-        self._node.clear()
-
-        # Breadcrumbs (unsorted)
-        for path, name in self._breadcrumb_items():
-            meta = self._values_for_path(path)
-            safe = self._tree_safety_icon(name)
-            if self.col_kind.get():
-                row_text = meta.get("#0", "Folder")
-                row_vals = []
-                for dc in cols:
-                    if dc == "name":
-                        row_vals.append(name)
-                    elif dc == "safe":
-                        row_vals.append(safe)
-                    else:
-                        row_vals.append(meta.get(dc, ""))
-            else:
-                row_text = name
-                row_vals = []
-                for dc in cols:
-                    if dc == "safe":
-                        row_vals.append(safe)
-                    else:
-                        row_vals.append(meta.get(dc, ""))
-            iid = self.tree.insert("", "end", text=row_text, values=row_vals)
-            self._node[iid] = {"path": path, "kind": "dir", "role": "breadcrumb"}
-
-        # Create New Folder (bold)
-        sep1_vals = []
-        for dc in cols:
-            sep1_vals.append("" if dc != "name" else "=== Create New Folder ===")
-        sep1_text = "" if self.col_kind.get() else "=== Create New Folder ==="
-        sep1 = self.tree.insert("", "end", text=sep1_text, values=sep1_vals, tags=("bold",))
-        self._node[sep1] = {"path": None, "kind": "create_dir"}
-
-        # CWD entries
-        try:
-            entries = list(self.cwd.iterdir())
-        except Exception:
-            entries = []
-        show_hidden = self.show_hidden.get()
-        dirs = [e for e in entries if e.is_dir() and (show_hidden or not e.name.startswith("."))]
-        files = [e for e in entries if e.is_file() and (show_hidden or not e.name.startswith("."))]
-
-        # On directory change, start from filename sort; otherwise keep current order ranks.
-        if cwd_changed:
-            dirs = sorted(dirs, key=lambda p: p.name.lower())
-            files = sorted(files, key=lambda p: p.name.lower())
-        else:
-            dirs = sorted(dirs, key=lambda p: rank_dirs.get(p.resolve(), 10**9))
-            files = sorted(files, key=lambda p: rank_files.get(p.resolve(), 10**9))
-
-        # Then apply current sort stably
-        dirs = self._stably_sort_entries(dirs)
-        files = self._stably_sort_entries(files)
-
-        # Insert dirs
-        for d in dirs:
-            meta = self._values_for_path(d)
-            safe = self._tree_safety_icon(d.name)
-            if self.col_kind.get():
-                row_text = meta.get("#0", "Folder")
-                row_vals = [meta.get(dc, "") if dc not in ("name", "safe")
-                            else (d.name if dc == "name" else safe) for dc in cols]
-            else:
-                row_text = d.name
-                row_vals = [meta.get(dc, "") if dc != "safe" else safe for dc in cols]
-            iid = self.tree.insert("", "end", text=row_text, values=row_vals)
-            self._node[iid] = {"path": d, "kind": "dir", "role": "cwd-dir"}
-
-        # Create New File (bold)
-        sep2_vals = []
-        for dc in cols:
-            sep2_vals.append("" if dc != "name" else "=== Create New File ===")
-        sep2_text = "" if self.col_kind.get() else "=== Create New File ==="
-        sep2 = self.tree.insert("", "end", text=sep2_text, values=sep2_vals, tags=("bold",))
-        self._node[sep2] = {"path": None, "kind": "create_file"}
-
-        # Insert files
-        for f in files:
-            meta = self._values_for_path(f)
-            safe = self._tree_safety_icon(f.name)
-            if self.col_kind.get():
-                row_text = meta.get("#0", "File")
-                row_vals = [meta.get(dc, "") if dc not in ("name", "safe")
-                            else (f.name if dc == "name" else safe) for dc in cols]
-            else:
-                row_text = f.name
-                row_vals = [meta.get(dc, "") if dc != "safe" else safe for dc in cols]
-            iid = self.tree.insert("", "end", text=row_text, values=row_vals)
-            self._node[iid] = {"path": f, "kind": "file", "role": "cwd-file"}
-
-        self._update_nav_buttons()
-        if selected_before is not None:
-            self._select_path(selected_before)
-
-        # also refresh metadata safety glyph if there's a selected path or typed text
-        self._update_meta_safety_from_entry()
-
-    # ------------------- Sorting helpers -------------------
-
     def _effective_sort_attr(self, col: str) -> str:
         if col == "#0":
-            return "kind" if self.col_kind.get() else "name"
+            if not self.col_type.get():
+                return "name"  # Type OFF → #0 is filename (sort by filename)
+            return "mime" if self._mime_enabled() else "kind"
         return col
 
-    def _stably_sort_entries(self, entries):
-        key = self._effective_sort_attr(self._sort_key)
-        reverse = self._sort_desc
+    def _sort_label_for(self, col: str) -> str:
+        if col == "#0":
+            base = "" if (self.col_type.get() and self._mime_enabled()) else ("Kind" if self.col_type.get() else "Filename")
+        else:
+            base = "Filename" if col == "name" else ("!" if col == "safe" else col.capitalize())
+        if col == self._sort_key and col != "safe":
+            return f"{base} {'▼' if not self._sort_desc else '▲'}".strip()
+        return base
 
-        def k(p: Path):
-            try:
-                if key == "name":
-                    return p.name.lower()
+    def _key_for_entry(self, p: Path, key: str):
+        """
+        Stable, minimal keys:
+        - Directories before files (0/1).
+        - Then the requested attribute.
+        - IMPORTANT: No fallback to name here (unless key == 'name'). Ties remain in prior order.
+        """
+        is_dir = 0 if p.is_dir() else 1
+        try:
+            if key == "name":
+                return (is_dir, p.name.lower())
+            if key == "kind":
+                # group dirs vs files, no further tiebreaker
+                return (is_dir, 0)  # same value within group → stable by prior order
+            if key == "mime":
+                if p.is_dir():
+                    return (0, 0)  # dirs grouped; equal → stable
+                mime, _ = self._guess_mime_for(p)
+                mime = (mime or "application/octet-stream").lower()
+                return (1, mime)
+            if key == "size":
                 st = p.stat()
-                if key == "kind":
-                    return "Folder" if p.is_dir() else "File"
-                if key == "size":
-                    return -1 if p.is_dir() else st.st_size
-                if key == "modified":
-                    return st.st_mtime
-                if key == "mode":
-                    return stat.S_IMODE(st.st_mode)
-            except Exception:
-                return 0
-            return p.name.lower()
+                return (is_dir, -1 if p.is_dir() else st.st_size)
+            if key == "modified":
+                st = p.stat()
+                return (is_dir, st.st_mtime)
+            if key == "mode":
+                st = p.stat()
+                return (is_dir, stat.S_IMODE(st.st_mode))
+        except Exception:
+            return (is_dir, 0)
+        return (is_dir, 0)
 
-        # Python's sort is stable: applying this after an initial name sort preserves
-        # that order among equal keys.
-        return sorted(entries, key=k, reverse=reverse)
+    def _stably_sort_entries(self, entries: List[Path]):
+        key_attr = self._effective_sort_attr(self._sort_key)
+        reverse = self._sort_desc
+        return sorted(entries, key=lambda p: self._key_for_entry(p, key_attr), reverse=reverse)
 
     def _current_order_ranks(self):
         rank_dirs, rank_files = {}, {}
@@ -565,24 +552,168 @@ class FilePanel:
         return rank_dirs, rank_files
 
     def _on_heading_click(self, col: str):
-        # Toggle sort; DO NOT touch ratios here.
         if col == self._sort_key:
             self._sort_desc = not self._sort_desc
         else:
             self._sort_key = col
             self._sort_desc = False
+        self._apply_tree_columns()
         self.refresh_file_panel()
 
-    def _sort_label_for(self, col: str) -> str:
-        if col == "#0":
-            base = "Kind" if self.col_kind.get() else "Filename"
-        else:
-            base = "Filename" if col == "name" else ("!" if col == "safe" else col.capitalize())
-        if col == self._sort_key and col != "safe":
-            return f"{base} {'▼' if not self._sort_desc else '▲'}"
-        return base
+    # ---------------- Rendering ----------------
 
-    # ------------------- Selection & metadata -------------------
+    def refresh_file_panel(self):
+        cols, heads = self._tree_columns()
+        self.tree.configure(columns=cols)
+
+        self.tree.heading("#0", text=self._sort_label_for("#0"), anchor="center",
+                          command=lambda: self._on_heading_click("#0"))
+        for c in ("name", "safe", "size", "modified", "mode"):
+            if c in cols:
+                if c == "safe":
+                    self.tree.heading(c, text=heads.get(c, "!"), anchor="center")
+                else:
+                    self.tree.heading(c, text=self._sort_label_for(c),
+                                      command=lambda col=c: self._on_heading_click(col))
+
+        self._apply_fixed_widths()
+
+        cwd_changed = (self._last_cwd is None) or (self.cwd != self._last_cwd)
+        self._last_cwd = self.cwd
+
+        selected_before = self._selected_path
+        rank_dirs, rank_files = self._current_order_ranks()
+
+        self.tree.delete(*self.tree.get_children())
+        self._node.clear()
+
+        def _ins(row_text, row_vals, img=None, tags=()):
+            kwargs = {"parent": "", "index": "end", "text": row_text, "values": row_vals}
+            if img is not None:
+                kwargs["image"] = img
+            if tags:
+                kwargs["tags"] = tags
+            return self.tree.insert(**kwargs)
+
+        def icon_for(p: Optional[Path], fallback: str) -> Optional[tk.PhotoImage]:
+            if p is None:
+                icon_name = fallback
+            else:
+                _mime, icon_name = self._guess_mime_for(p)
+                icon_name = icon_name or fallback
+            return self._load_icon_image(icon_name, size=16)
+
+        type_is_icon = self.col_type.get() and self._mime_enabled()
+
+        # Breadcrumbs
+        for path, name in self._breadcrumb_items():
+            meta = self._values_for_path(path)
+            safe = self._tree_safety_icon(name)
+            img = icon_for(path, "inode-directory") if type_is_icon else None
+
+            if self.col_type.get():
+                if type_is_icon:
+                    row_text = ""
+                    row_vals = [(name if dc == "name" else (safe if dc == "safe" else meta.get(dc, "")))
+                                for dc in cols]
+                    iid = _ins(row_text, row_vals, img=img)
+                else:
+                    row_text = meta.get("#0", "Folder")
+                    row_vals = [(name if dc == "name" else (safe if dc == "safe" else meta.get(dc, "")))
+                                for dc in cols]
+                    iid = _ins(row_text, row_vals)
+            else:
+                row_text = name
+                row_vals = [(safe if dc == "safe" else meta.get(dc, "")) for dc in cols]
+                iid = _ins(row_text, row_vals)
+            self._node[iid] = {"path": path, "kind": "dir", "role": "breadcrumb"}
+
+        # Create New Folder
+        img_new_folder = icon_for(None, "folder-new") if type_is_icon else None
+        sep1_vals = [("=== Create New Folder ===" if dc == "name" else "") for dc in cols]
+        sep1_text = "" if self.col_type.get() else "=== Create New Folder ==="
+        sep1 = _ins(sep1_text, sep1_vals, img=(img_new_folder if type_is_icon else None), tags=("bold",))
+        self._node[sep1] = {"path": None, "kind": "create_dir"}
+
+        # Gather entries
+        try:
+            entries = list(self.cwd.iterdir())
+        except Exception:
+            entries = []
+        show_hidden = self.show_hidden.get()
+        dirs  = [e for e in entries if e.is_dir() and (show_hidden or not e.name.startswith("."))]
+        files = [e for e in entries if e.is_file() and (show_hidden or not e.name.startswith("."))]
+
+        # Initial name sort on directory change; otherwise preserve current order ranks
+        if cwd_changed:
+            dirs  = sorted(dirs,  key=lambda p: p.name.lower())
+            files = sorted(files, key=lambda p: p.name.lower())
+        else:
+            dirs  = sorted(dirs,  key=lambda p: rank_dirs.get(p.resolve(), 10**9))
+            files = sorted(files, key=lambda p: rank_files.get(p.resolve(), 10**9))
+
+        # Apply current sort (stable; ties keep prior order)
+        dirs  = self._stably_sort_entries(dirs)
+        files = self._stably_sort_entries(files)
+
+        # Insert dirs
+        for d in dirs:
+            meta = self._values_for_path(d)
+            safe = self._tree_safety_icon(d.name)
+            if self.col_type.get():
+                if type_is_icon:
+                    img = icon_for(d, "inode-directory")
+                    row_text = ""
+                    row_vals = [(d.name if dc == "name" else (safe if dc == "safe" else meta.get(dc, "")))
+                                for dc in cols]
+                    iid = _ins(row_text, row_vals, img=img)
+                else:
+                    row_text = meta.get("#0", "Folder")
+                    row_vals = [(d.name if dc == "name" else (safe if dc == "safe" else meta.get(dc, "")))
+                                for dc in cols]
+                    iid = _ins(row_text, row_vals)
+            else:
+                row_text = d.name
+                row_vals = [(safe if dc == "safe" else meta.get(dc, "")) for dc in cols]
+                iid = _ins(row_text, row_vals)
+            self._node[iid] = {"path": d, "kind": "dir", "role": "cwd-dir"}
+
+        # Create New File
+        img_new_file = icon_for(None, "document-new") if type_is_icon else None
+        sep2_vals = [("=== Create New File ===" if dc == "name" else "") for dc in cols]
+        sep2_text = "" if self.col_type.get() else "=== Create New File ==="
+        sep2 = _ins(sep2_text, sep2_vals, img=(img_new_file if type_is_icon else None), tags=("bold",))
+        self._node[sep2] = {"path": None, "kind": "create_file"}
+
+        # Insert files
+        for f in files:
+            meta = self._values_for_path(f)
+            safe = self._tree_safety_icon(f.name)
+            if self.col_type.get():
+                if type_is_icon:
+                    _mime, icon_name = self._guess_mime_for(f)
+                    img = self._load_icon_image(icon_name or "text-x-generic", size=16)
+                    row_text = ""
+                    row_vals = [(f.name if dc == "name" else (safe if dc == "safe" else meta.get(dc, "")))
+                                for dc in cols]
+                    iid = _ins(row_text, row_vals, img=img)
+                else:
+                    row_text = meta.get("#0", "File")
+                    row_vals = [(f.name if dc == "name" else (safe if dc == "safe" else meta.get(dc, "")))
+                                for dc in cols]
+                    iid = _ins(row_text, row_vals)
+            else:
+                row_text = f.name
+                row_vals = [(safe if dc == "safe" else meta.get(dc, "")) for dc in cols]
+                iid = _ins(row_text, row_vals)
+            self._node[iid] = {"path": f, "kind": "file", "role": "cwd-file"}
+
+        self._update_nav_buttons()
+        if selected_before is not None:
+            self._select_path(selected_before)
+        self._update_meta_safety_from_entry()
+
+    # ---------------- Selection & metadata ----------------
 
     def _on_tree_select(self, _evt):
         iid = self._first_selection()
@@ -612,7 +743,11 @@ class FilePanel:
         size = "-" if what == "dir" else "0 B"
 
         self.meta_filename.delete(0, tk.END)
-        self.meta_kind.config(text=kind)
+        if self._mime_enabled():
+            self.meta_icon_img.config(image=""); self.meta_icon_img.image = None
+            self.meta_mime_text.config(text="")
+        else:
+            self.meta_kind_value.config(text=kind)
         self.meta_size.config(text=size)
         self.meta_modified.delete(0, tk.END); self.meta_modified.insert(0, now)
         self.meta_mode.delete(0, tk.END);     self.meta_mode.insert(0, mode)
@@ -662,7 +797,16 @@ class FilePanel:
         mode_str = f"{stat.S_IMODE(st.st_mode):04o}"
 
         self.meta_filename.delete(0, tk.END); self.meta_filename.insert(0, p.name)
-        self.meta_kind.config(text=kind)
+        if self._mime_enabled():
+            mime, icon_name = self._guess_mime_for(p)
+            img = self._load_icon_image(icon_name or "", 16)
+            if hasattr(self, "meta_icon_img"):
+                self.meta_icon_img.config(image=img); self.meta_icon_img.image = img
+            if hasattr(self, "meta_mime_text"):
+                self.meta_mime_text.config(text=(mime or ""))
+        else:
+            if hasattr(self, "meta_kind_value"):
+                self.meta_kind_value.config(text=kind)
         self.meta_size.config(text=size)
         self.meta_modified.delete(0, tk.END); self.meta_modified.insert(0, mtime_str)
         self.meta_mode.delete(0, tk.END);     self.meta_mode.insert(0, mode_str)
@@ -673,11 +817,9 @@ class FilePanel:
         self._update_meta_safety_from_entry()
 
     def _on_meta_edited(self, _evt):
-        # live-update the little safety glyph
         self._update_meta_safety_from_entry()
 
         if self._create_mode:
-            filename_ok = True  # empty string allowed visually; creation still requires non-empty at Accept
             modified_ok = self._validate_datetime(self.meta_modified.get().strip())
             mode_ok     = self._validate_mode(self.meta_mode.get().strip())
             filename_nonempty = bool(self.meta_filename.get().strip())
@@ -699,10 +841,9 @@ class FilePanel:
         if enabled: self.accept_btn.state(["!disabled"])
         else:       self.accept_btn.state(["disabled"])
 
-    # ------------------- Accept / Cancel -------------------
+    # ---------------- Accept / Cancel / Delete ----------------
 
     def _on_accept(self):
-        # CREATE mode
         if self._create_mode:
             name = self.meta_filename.get().strip()
             if not name:
@@ -747,7 +888,6 @@ class FilePanel:
             self._set_accept_enabled(False)
             return
 
-        # EDIT mode
         if not self._selected_path:
             return
 
@@ -812,10 +952,36 @@ class FilePanel:
         self._load_metadata_from_path(self._selected_path)
         self._set_accept_enabled(False)
 
-    # ------------------- Safety: dialog from metadata face only -------------------
+    def _on_delete(self):
+        if self._create_mode:
+            return
+        p = self._selected_path
+        if not p:
+            messagebox.showinfo("Delete", "No item selected.")
+            return
+        if not hasattr(self, "delete_path"):
+            messagebox.showerror("Delete Unavailable",
+                                 "Delete operation is not configured by the application.")
+            return
+        label = f"folder:\n{p}" if p.is_dir() else f"file:\n{p}"
+        if not messagebox.askyesno("Confirm Delete", f"Are you sure you want to delete this {label}?",
+                                   icon="warning", default="no"):
+            return
+        try:
+            self.delete_path(p)  # main.py must implement this
+        except Exception as e:
+            messagebox.showerror("Delete Failed", f"Could not delete:\n{e}")
+            return
+        if p == self.cwd:
+            self.set_cwd(p.parent if p.parent.exists() else Path.home())
+        else:
+            self.refresh_file_panel()
+            self._selected_path = None
+            self._set_accept_enabled(False)
+
+    # ---------------- Safety dialog (metadata face only) ----------------
 
     def _on_meta_flag_clicked(self):
-        """Clicking the face next to the Filename entry opens the dialog on the Entry text (if issues)."""
         current = self.meta_filename.get()
         issues = self._filename_issues(current)
         if not issues:
@@ -840,20 +1006,18 @@ class FilePanel:
             if new_name != name:
                 self.meta_filename.delete(0, tk.END)
                 self.meta_filename.insert(0, new_name)
-                # mark dirty
                 self._on_meta_edited(None)
             else:
                 messagebox.showinfo("Sanitize", "No changes were necessary after sanitation.")
 
     def _update_meta_safety_from_entry(self):
-        """Update the 🙂 / ☹ glyph next to the filename entry to reflect current text."""
         name = self.meta_filename.get()
         icon = self._meta_safety_icon(name)
         is_safe = (icon == "🙂")
         self.meta_fname_flag.config(text=icon,
                                     fg=(self._FG_TEXT if is_safe else self._ERR_RED))
 
-    # ------------------- helpers -------------------
+    # ---------------- Misc helpers ----------------
 
     def _go_up(self):
         if not self.cwd:
@@ -940,3 +1104,291 @@ class FilePanel:
             return True, v
         except Exception:
             return False, None
+
+    # ---------------- XDG icon + MIME helpers ----------------
+
+    def _load_ext_overrides(self) -> Dict[str, str]:
+        """
+        Load 'extensions.txt' from THIS module's directory only (no fallbacks).
+
+        Format per line:
+            .py text/x-python
+            js = application/javascript
+        - Leading '.' on the extension is optional.
+        - Separator can be whitespace or '='.
+        - Lines starting with '#' or blank lines are ignored.
+
+        If the file is missing or yields no valid mappings, show an error and exit.
+        """
+        import sys
+        from tkinter import messagebox
+
+        here = Path(__file__).resolve().parent
+        path = here / "extensions.txt"
+
+        if not path.is_file():
+            msg = (
+                "Zeropad requires 'extensions.txt' next to the code:\n\n"
+                f"  {path}\n\n"
+                "Create the file with lines like:\n\n"
+                ".py   text/x-python\n"
+                ".js   application/javascript\n"
+                ".yml  text/yaml\n"
+                ".json application/json\n\n"
+                "Then restart Zeropad."
+            )
+            try:
+                messagebox.showerror("Missing extensions.txt", msg)
+            except Exception:
+                print(msg, file=sys.stderr)
+            try:
+                if hasattr(self, "exit_app") and callable(getattr(self, "exit_app")):
+                    self.after(0, self.exit_app)
+                else:
+                    self.after(0, self.destroy)
+            except Exception:
+                pass
+            raise SystemExit(1)
+
+        # Parse the single required file
+        try:
+            mapping: Dict[str, str] = {}
+            for raw in path.read_text(encoding="utf-8", errors="ignore").splitlines():
+                line = raw.strip()
+                if not line or line.startswith("#"):
+                    continue
+                if "=" in line:
+                    left, right = line.split("=", 1)
+                else:
+                    parts = line.split()
+                    if len(parts) < 2:
+                        continue
+                    left, right = parts[0], " ".join(parts[1:])
+                ext = left.strip().lower()
+                mime = right.strip()
+                if not ext or not mime:
+                    continue
+                if not ext.startswith("."):
+                    ext = "." + ext
+                mapping[ext] = mime
+
+            if mapping:
+                return mapping
+        except Exception:
+            # Fall through to error below
+            pass
+
+        # File existed but produced no usable mappings
+        msg = (
+            "'extensions.txt' was found but contained no valid mappings:\n\n"
+            f"  {path}\n\n"
+            "Each line must be '<ext> <mime>' or '<ext>=<mime>', e.g.:\n"
+            ".py   text/x-python\n"
+            "js = application/javascript\n"
+            ".yml  text/yaml\n"
+            ".json application/json\n"
+        )
+        try:
+            messagebox.showerror("Invalid extensions.txt", msg)
+        except Exception:
+            print(msg, file=sys.stderr)
+        try:
+            if hasattr(self, "exit_app") and callable(getattr(self, "exit_app")):
+                self.after(0, self.exit_app)
+            else:
+                self.after(0, self.destroy)
+        except Exception:
+            pass
+        raise SystemExit(1)
+        
+
+    def _guess_mime_for(self, path: Path) -> Tuple[Optional[str], Optional[str]]:
+        # Cache lookup
+        try:
+            if path in self._mime_cache:
+                return self._mime_cache[path]
+        except TypeError:
+            pass
+
+        # Directories are well-known
+        try:
+            if path.is_dir():
+                result = ("inode/directory", "inode-directory")
+                self._mime_cache[path] = result
+                return result
+        except Exception:
+            pass
+
+        # MIME disabled → return nothing (icon/kind handled elsewhere)
+        if not self._mime_enabled():
+            result = (None, None)
+            self._mime_cache[path] = result
+            return result
+
+        mime: Optional[str] = None
+        icon_name: Optional[str] = None
+
+        try:
+            # 1) Extension override has PRIORITY (fixes empty .py → text/x-python)
+            ext = path.suffix.lower()
+            if ext and ext in self._ext_overrides:
+                mime = self._ext_overrides[ext]
+
+            # 2) If no override, ask Gio (with sniffed bytes)
+            if mime is None:
+                data = None
+                try:
+                    with open(path, "rb") as f:
+                        data = f.read(8192)
+                except Exception:
+                    data = None
+
+                ctype, _uncertain = Gio.content_type_guess(str(path), data)
+                if ctype:
+                    mime = Gio.content_type_get_mime_type(ctype) or ctype
+
+            # 3) If Gio fell back to zerosize/plain and we DO have an override, prefer override
+            if ext and ext in self._ext_overrides:
+                if mime in (None, "", "application/x-zerosize", "text/plain", "application/octet-stream"):
+                    mime = self._ext_overrides[ext]
+
+            # 4) Resolve themed icon name
+            if mime:
+                icon = Gio.content_type_get_icon(Gio.content_type_from_mime_type(mime) or mime)
+            else:
+                icon = None
+
+            if icon:
+                if isinstance(icon, Gio.ThemedIcon):
+                    names = icon.get_names()
+                    for nm in names:
+                        if self._resolve_icon_path(nm):
+                            icon_name = nm; break
+                    if icon_name is None and names:
+                        icon_name = names[0]
+                else:
+                    s = icon.to_string()
+                    if s:
+                        for nm in s.split(","):
+                            nm = nm.strip()
+                            if self._resolve_icon_path(nm):
+                                icon_name = nm; break
+                        if icon_name is None:
+                            icon_name = s.split(",")[0].strip()
+
+            if icon_name is None:
+                if mime and mime.startswith("text/"):
+                    icon_name = "text-x-generic"
+                else:
+                    icon_name = "application-octet-stream"
+
+            result = (mime, icon_name)
+            self._mime_cache[path] = result
+            return result
+        except Exception:
+            result = (None, None)
+            self._mime_cache[path] = result
+            return result
+
+    def _pixbuf_to_photoimage(self, pb: "GdkPixbuf.Pixbuf") -> Optional[tk.PhotoImage]:
+        if not _HAS_GDKPB or pb is None:
+            return None
+        try:
+            ok, buf = pb.save_to_bufferv("png", [], [])
+            if not ok:
+                return None
+            return tk.PhotoImage(data=buf, format="png")
+        except Exception:
+            return None
+
+    def _resolve_icon_path(self, icon_name: str) -> Optional[Path]:
+        if not icon_name:
+            return None
+        names = {icon_name}
+        if icon_name.endswith(".png") or icon_name.endswith(".svg"):
+            names.add(icon_name.rsplit(".", 1)[0])
+        else:
+            names.add(icon_name + ".png")
+            names.add(icon_name + ".svg")
+
+        roots = [
+            Path.home() / ".icons",
+            Path(os.environ.get("XDG_DATA_HOME", str(Path.home() / ".local/share"))) / "icons",
+            Path("/usr/local/share/icons"),
+            Path("/usr/share/icons"),
+            Path("/usr/share/pixmaps"),
+        ]
+
+        theme_dirs = []
+        for r in roots:
+            if Path(r).exists():
+                try:
+                    for d in Path(r).iterdir():
+                        if d.is_dir():
+                            theme_dirs.append(d)
+                except Exception:
+                    pass
+        theme_dirs += [Path("/usr/share/icons/hicolor"), Path("/usr/share/icons/Adwaita")]
+
+        sizes = ["16x16", "22x22", "24x24", "32x32"]
+        cats  = ["mimetypes", "places", "apps", "status"]
+
+        for tdir in theme_dirs:
+            for sz in sizes:
+                for cat in cats:
+                    d = tdir / sz / cat
+                    if not d.exists():
+                        continue
+                    for nm in list(names):
+                        p = d / nm
+                        if p.is_file():
+                            return p
+
+        for tdir in theme_dirs:
+            d = tdir / "scalable"
+            if not d.exists():
+                continue
+            for cat in cats:
+                cdir = d / cat
+                if not cdir.exists():
+                    continue
+                for nm in list(names):
+                    p = cdir / (nm if nm.endswith(".svg") else nm + ".svg")
+                    if p.is_file():
+                        return p
+
+        for r in roots:
+            if Path(r).exists():
+                for nm in list(names):
+                    p = Path(r) / nm
+                    if p.is_file():
+                        return p
+        return None
+
+    def _load_icon_image(self, icon_name: str, size: int = 16) -> Optional[tk.PhotoImage]:
+        if not icon_name:
+            return None
+        key = f"{icon_name}@{size}"
+        img = self._img_cache.get(key)
+        if img:
+            return img
+
+        path = self._resolve_icon_path(icon_name)
+        if path is None:
+            return None
+
+        try:
+            suffix = path.suffix.lower()
+            if suffix == ".png":
+                img = tk.PhotoImage(file=str(path))
+            elif suffix == ".svg" and _HAS_GDKPB:
+                pb = GdkPixbuf.Pixbuf.new_from_file_at_size(str(path), size, size)
+                img = self._pixbuf_to_photoimage(pb)
+            else:
+                img = None
+            if img:
+                self._img_cache[key] = img
+                return img
+        except Exception:
+            return None
+        return None
