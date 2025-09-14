@@ -4,8 +4,8 @@
 # Rules:
 #   • Leading '.' is optional, but included here for clarity.
 #   • Separator is whitespace (you can also use '=').
-#   • These overrides are consulted BEFORE Gio’s sniffing so empty files
-#     like ".py" are still recognized correctly.
+#   • These overrides are consulted BEFORE Gio’s sniffing, ensuring that empty
+#     files like ".py" files are still recognized correctly.
 # ======================================================================
 
 # ---------- Plain text, config, docs ----------
