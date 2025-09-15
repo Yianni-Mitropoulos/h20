@@ -1,3 +1,4 @@
+# menus.py
 import tkinter as tk
 import subprocess
 from tkinter import filedialog, messagebox
@@ -78,16 +79,58 @@ class Menus:
     # File menu commands
     # ======================================================================
 
+    def _menu_copy_cwd(self):
+        cwd = getattr(self, "cwd", None)
+        if not cwd:
+            messagebox.showinfo("Copy CWD", "No current working directory.")
+            return
+        self.clipboard_clear()
+        self.clipboard_append(str(cwd))
+        self.update_idletasks()
+        messagebox.showinfo("Copy CWD", f"Copied to clipboard:\n{cwd}")
+
+    def _menu_change_cwd(self):
+        cwd = getattr(self, "cwd", Path.home())
+        dirname = filedialog.askdirectory(initialdir=str(cwd), title="Change CWD")
+        if not dirname:
+            return
+        p = Path(dirname)
+        if not p.exists() or not p.is_dir():
+            messagebox.showerror("Change CWD", "Please select a directory.")
+            return
+        self.set_cwd(p)
+
+    def _menu_exit(self):
+        # Mouse-only per spec — no accelerator binding
+        if hasattr(self, "exit_app"):
+            self.exit_app()
+        else:
+            self.destroy()
+
+    def _open_with_system(self, path: Path):
+        """Open a file or folder with the OS default handler (cross-platform)."""
+        try:
+            import sys, os, subprocess
+            if os.name == "nt":
+                os.startfile(str(path))  # type: ignore[attr-defined]
+            elif sys.platform == "darwin":
+                subprocess.Popen(["open", str(path)],
+                                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            else:
+                subprocess.Popen(["xdg-open", str(path)],
+                                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        except Exception as e:
+            from tkinter import messagebox
+            messagebox.showerror("Open with System Default", f"Could not open:\n{e}")
+
     def _menu_open_selected(self):
         """Open the currently selected item from the File panel.
 
         Behavior:
         - Prompt: System default vs Open in Zeropad (same as double-click).
-        - If 'system': xdg-open it.
-        - If 'zeropad': delegate to TextPanel.open_with_zeropad(path),
-            which will ask for encoding (dark-themed) and open the tab.
+        - If 'system': open via OS default (cross-platform).
+        - If 'zeropad': delegate to TextPanel.open_with_zeropad(path).
         """
-
         # Ask the File panel for the selected path
         if not hasattr(self, "get_selected_path") or not callable(self.get_selected_path):
             messagebox.showerror("Open Selected", "File panel is not available.")
@@ -116,48 +159,14 @@ class Menus:
             return
 
         if choice == "system":
-            try:
-                subprocess.Popen(
-                    ["xdg-open", str(p)],
-                    stdout=subprocess.DEVNULL,
-                    stderr=subprocess.DEVNULL
-                )
-            except Exception as e:
-                messagebox.showerror("Open with System Default", f"xdg-open error:\n{e}")
+            self._open_with_system(p)
             return
 
         if choice == "zeropad":
             # Let the TextPanel drive encoding selection + open.
             if hasattr(self, "open_with_zeropad") and callable(self.open_with_zeropad):
-                self.open_with_zeropad(p)
+                # Defer slightly so focus/grab transitions feel clean.
+                self.after_idle(lambda: self.open_with_zeropad(p))
             else:
                 messagebox.showerror("Open in Zeropad", "Text editor is not available.")
             return
-
-    def _menu_copy_cwd(self):
-        cwd = getattr(self, "cwd", None)
-        if not cwd:
-            messagebox.showinfo("Copy CWD", "No current working directory.")
-            return
-        self.clipboard_clear()
-        self.clipboard_append(str(cwd))
-        self.update_idletasks()
-        messagebox.showinfo("Copy CWD", f"Copied to clipboard:\n{cwd}")
-
-    def _menu_change_cwd(self):
-        cwd = getattr(self, "cwd", Path.home())
-        dirname = filedialog.askdirectory(initialdir=str(cwd), title="Change CWD")
-        if not dirname:
-            return
-        p = Path(dirname)
-        if not p.exists() or not p.is_dir():
-            messagebox.showerror("Change CWD", "Please select a directory.")
-            return
-        self.set_cwd(p)
-
-    def _menu_exit(self):
-        # Mouse-only per spec — no accelerator binding
-        if hasattr(self, "exit_app"):
-            self.exit_app()
-        else:
-            self.destroy()

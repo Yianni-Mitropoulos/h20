@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-
+# main.py
 import os
 import tkinter as tk
 from tkinter import ttk
@@ -230,6 +230,14 @@ class Zeropad(Menus, FilePanel, TextPanel, TerminalPanel, tk.Tk):
             shutil.rmtree(p)
         else:
             p.unlink()
+
+    # Paste this new method inside class Zeropad (anywhere among the other methods).
+    def delete_path(self, path: Path):
+        """
+        Bridge for FilePanel → Zeropad deletion.
+        FilePanel calls `delete_path(p)`. We delegate to our centralized implementation.
+        """
+        return self.request_delete(path)
 
 if __name__ == "__main__":
     app = Zeropad()

@@ -1,3 +1,4 @@
+# text_panel.py
 from __future__ import annotations
 import os
 import time
@@ -97,6 +98,7 @@ class TextPanel:
 
         # Notebook
         self._nb = ttk.Notebook(self.editor)
+        self._bind_tab_mouse()
         self._nb.grid(row=0, column=0, sticky="nsew")
         self.editor.grid_rowconfigure(0, weight=1)
         self.editor.grid_columnconfigure(0, weight=1)
@@ -124,7 +126,7 @@ class TextPanel:
         self._nb.enable_traversal()
         self._nb.bind("<<NotebookTabChanged>>", self._on_tab_changed, add="+")
         # Clicks for close "✕" and "+" behavior
-        self._nb.bind("<Button-1>", self._on_nb_click, add="+")
+        self._install_nb_close_binding()
 
         # Create initial empty tab
         self._create_empty_tab_and_select()
@@ -221,30 +223,6 @@ class TextPanel:
         if self._nb.select() == str(self._plus_tab):
             self._create_empty_tab_and_select()
 
-    def _on_nb_click(self, event):
-        """Close when clicking the '✕' area; create new on '+' tab."""
-        try:
-            idx = self._nb.index(f"@{event.x},{event.y}")
-        except Exception:
-            return
-        # '+' tab?
-        if idx == 0:
-            # Only treat as '+' when label area clicked (not the notebook gaps)
-            if self._nb.identify(event.x, event.y) == "label":
-                self._create_empty_tab_and_select()
-            return
-        # Close if clicked near right edge of tab label
-        try:
-            bx, by, bw, bh = self._nb.bbox(idx)
-        except Exception:
-            return
-        # A ~18px zone on the right
-        if event.x >= bx + bw - 18:
-            # Map idx to frame, then close
-            tab_widget = self._nb.tabs()[idx]
-            if tab_widget != str(self._plus_tab):
-                self._close_tab_by_widget(tab_widget)
-
     def _close_current_tab(self):
         cur = self._nb.select()
         if not cur or cur == str(self._plus_tab):
@@ -269,92 +247,6 @@ class TextPanel:
                     return  # save cancelled or failed
         self._nb.forget(tab_widget)
         self._tabs.pop(id(tab["frame"]), None)
-
-    # =====================================================================
-    # Build a tab's internals
-    # =====================================================================
-
-    def _mk_tab_ui(self, frame: tk.Frame, title: str,
-                    *, path: Optional[Path] = None, initial_text: str = "",
-                    encoding: str = "utf-8", add_bom: bool = False) -> int:
-        mono = tkfont.Font(family="Monospace", size=11)
-        ln_bg = "#101828"
-        face_bg = "#0d1628"
-        txt_bg = DARK_BG
-
-        # Container
-        host = tk.Frame(frame, bg=DARK_PANEL, highlightthickness=0, bd=0)
-        host.pack(fill="both", expand=True)
-        host.grid_rowconfigure(0, weight=1)
-        for c in (0, 1, 2):
-            host.grid_columnconfigure(c, weight=0)
-        host.grid_columnconfigure(3, weight=1)
-
-        # Line numbers gutter
-        ln = tk.Canvas(host, width=48, bg=ln_bg, highlightthickness=0, bd=0, takefocus=0)
-        ln.grid(row=0, column=0, sticky="ns")
-        ln.bind("<Button-1>", lambda e: "break")  # unselectable
-
-        # Safety faces gutter
-        face = tk.Canvas(host, width=18, bg=face_bg, highlightthickness=0, bd=0, takefocus=0)
-        face.grid(row=0, column=1, sticky="ns")
-        face.bind("<Button-1>", lambda e: "break")  # clicks handled below on unhappy faces
-
-        # Soft boundary (no visible line)
-        sep = tk.Frame(host, width=1, bg=DARK_PANEL, highlightthickness=0, bd=0)
-        sep.grid(row=0, column=2, sticky="ns")
-
-        # Text + Scrollbar
-        txt = tk.Text(host, wrap="none", undo=True,
-                      background=txt_bg, foreground=FG_TEXT, insertbackground=FG_TEXT,
-                      relief="flat", bd=0, padx=8, pady=6, font=mono, highlightthickness=0)
-        txt.grid(row=0, column=3, sticky="nsew")
-        scroll = ttk.Scrollbar(host, orient="vertical", command=txt.yview)
-        scroll.grid(row=0, column=4, sticky="ns")
-        txt.configure(yscrollcommand=lambda first, last, tid=None: self._on_text_yscroll(id(frame), first, last))
-
-        # Model
-        tab = {
-            "frame": frame,
-            "host": host,
-            "ln": ln,
-            "face": face,
-            "text": txt,
-            "scroll": scroll,
-            "path": path,
-            "title": title,
-            "encoding": encoding,
-            "add_bom": add_bom,
-            "dirty": False,
-            "last_paint": 0.0,
-            "repaint_due": None,
-        }
-        tid = id(frame)
-        self._tabs[tid] = tab
-
-        # Insert text (normalize EOLs)
-        if initial_text:
-            txt.insert("1.0", self._normalize_eols(initial_text))
-        txt.edit_reset()
-        txt.edit_modified(False)
-        txt.bind("<<Modified>>", lambda _e, t=tid: self._on_modified(t), add="+")
-        txt.bind("<KeyRelease>", lambda _e, t=tid: self._on_text_activity(t), add="+")
-        txt.bind("<ButtonRelease-1>", lambda _e, t=tid: self._on_text_activity(t), add="+")
-        txt.bind("<Configure>", lambda _e, t=tid: self._schedule_draw_gutters(t), add="+")
-        txt.bind("<MouseWheel>", lambda _e, t=tid: self._schedule_draw_gutters(t), add="+")
-        txt.bind("<Button-4>", lambda _e, t=tid: self._schedule_draw_gutters(t), add="+")
-        txt.bind("<Button-5>", lambda _e, t=tid: self._schedule_draw_gutters(t), add="+")
-        # Ctrl+A convenience
-        txt.bind("<Control-a>", lambda e, t=tid: (txt.tag_add("sel", "1.0", "end-1c"), "break"))
-
-        # Click unhappy faces to sanitize that line
-        face.bind("<Button-1>", lambda e, t=tid: self._on_face_click(t, e))
-
-        # Title & first paint
-        self._retitle_tab(tid, title, dirty=False)
-        self._update_status_for_tab(tab)
-        self._schedule_draw_gutters(tid, fast=True)
-        return tid
 
     # =====================================================================
     # Status / gutters / activity
@@ -469,10 +361,6 @@ class TextPanel:
             self._schedule_draw_gutters(tid, fast=True)
 
     # =====================================================================
-    # Cross-panel integration
-    # =====================================================================
-
-    # =====================================================================
     # Utils
     # =====================================================================
 
@@ -572,27 +460,6 @@ class TextPanel:
         # Re-title without a star
         self._retitle_tab(tid, tab.get("title") or (tab.get("path").name if tab.get("path") else "Untitled"), dirty=False)
         self._update_status_for_tab(tab)
-
-    def open_with_zeropad(self, path: Path, override_encoding: str | None = None):
-        """Open file; normalize EOLs to LF. If override_encoding is provided, use it."""
-        from tkinter import messagebox
-        from editor_io import read_text_bytes, decode_bytes, suggest_open_encoding  # new helper
-        try:
-            enc = override_encoding or suggest_open_encoding(path)
-            data = read_text_bytes(path)
-            text = decode_bytes(data, enc, "strict")
-        except Exception as e:
-            messagebox.showerror("Open failed", f"Could not open {path}:\n{e}")
-            return
-
-        text = self._normalize_eols(text)
-        frame = tk.Frame(self._nb, bg="#111827")
-        tid = self._mk_tab_ui(frame, title=Path(path).name,
-                              path=Path(path), initial_text=text,
-                              encoding=enc, add_bom=(enc.lower() == "utf-8-with-bom"))
-        self._add_tab_to_nb(frame, title=Path(path).name)
-        self._nb.select(frame)
-        return tid
 
     # =========================
     # Modified-flag squelching
@@ -703,9 +570,6 @@ class TextPanel:
         self._schedule_draw_gutters(tid, fast=True)
         return tid
 
-    # ==================================
-    # <<Modified>> handler (replacement)
-    # ==================================
     # ==================================================
     # Rename hook from FilePanel (replacement, squelched)
     # ==================================================
@@ -743,68 +607,6 @@ class TextPanel:
             finally:
                 # End after idle – some Tk builds deliver <<Modified>> late.
                 self.after_idle(lambda t=tab: (self._mod_squelch_end(t), t["text"].edit_modified(False)))
-
-    # ====================================================
-    # Revert & Save (replacement — guarded with squelch)
-    # ====================================================
-    def _revert_from_disk(self, tab: Dict):
-        p = tab["path"]
-        if not p:
-            return
-        if not messagebox.askyesno("Revert", f"Discard changes and reload from disk?\n\n{p}"):
-            return
-        try:
-            data = read_text_bytes(p)
-            text = decode_bytes(data, tab["encoding"] or "utf-8", "strict")
-            text = self._normalize_eols(text)
-        except Exception as e:
-            messagebox.showerror("Revert failed", f"Could not reload {p}:\n{e}")
-            return
-
-        txt: tk.Text = tab["text"]
-        # Replace buffer
-        txt.delete("1.0", "end")
-        txt.insert("1.0", text)
-
-        # Clear dirty state (both our flag and Tk’s internal flag)
-        tab["dirty"] = False
-        txt.edit_modified(False)
-
-        # Retitle the tab without asterisk and refresh status
-        title = (tab["path"].name if tab.get("path") else tab.get("title") or "Untitled")
-        self._retitle_tab(id(tab["frame"]), title, dirty=False)
-        self._update_status_for_tab(tab)
-
-        # Redraw gutters promptly
-        self._schedule_draw_gutters(id(tab["frame"]), fast=True)
-
-
-    def _save_tab_to_path(self, tab: Dict, target: Path):
-        """Save without flipping dirty due to spurious <<Modified>> around relabeling."""
-        txt: tk.Text = tab["text"]
-        s = txt.get("1.0", "end-1c")
-        try:
-            data = encode_text(s, tab.get("encoding") or "utf-8", bool(tab.get("add_bom")))
-            save_to_path(target, data)
-        except Exception as e:
-            messagebox.showerror("Save failed", f"Could not save to {target}:\n{e}")
-            return
-
-        # Update title/path under squelch
-        self._mod_squelch_begin(tab)
-        try:
-            tab["path"] = Path(target)
-            self._retitle_tab(id(tab["frame"]), tab["path"].name, dirty=False)
-            tab["dirty"] = False
-            try:
-                txt.edit_modified(False)
-                txt.edit_reset()
-            except Exception:
-                pass
-        finally:
-            self.after_idle(lambda t=tab: (self._mod_squelch_end(t), t["text"].edit_modified(False)))
-
-        self._update_status_for_tab(tab)
 
     # =====================================================================
     # Save Over Selected (File menu) — overwrite selected file *content only*
@@ -987,12 +789,126 @@ class TextPanel:
 
         return tid
 
+    def file_save_as(self):
+        tab = self._current_tab()
+        if not tab:
+            return
+        p = tab["path"]
+        enc = tab.get("encoding") or "utf-8"
+        result = None
+        try:
+            # new API: returns (path: Path, encoding: str)
+            result = prompt_save_as_with_encoding(self, p, enc)
+        except Exception:
+            fname = filedialog.asksaveasfilename(parent=self,
+                                                initialfile=(p.name if p else "untitled.txt"))
+            if not fname:
+                return
+            result = (Path(fname), enc)
+
+        if not result:
+            return
+
+        new_path, new_enc = result
+        tab["encoding"] = new_enc
+        tab["add_bom"] = (new_enc.lower() == "utf-8-with-bom")
+        self._save_tab_to_path(tab, Path(new_path))
+
+    def _mk_tab_ui(self, frame: tk.Frame, title: str,
+                *, path: Optional[Path] = None, initial_text: str = "",
+                encoding: str = "utf-8", add_bom: bool = False) -> int:
+        mono = tkfont.Font(family="Monospace", size=11)
+        ln_bg = "#101828"
+        face_bg = "#0d1628"
+        txt_bg = DARK_BG
+
+        # Container
+        host = tk.Frame(frame, bg=DARK_PANEL, highlightthickness=0, bd=0)
+        host.pack(fill="both", expand=True)
+        host.grid_rowconfigure(0, weight=1)
+        for c in (0, 1, 2):
+            host.grid_columnconfigure(c, weight=0)
+        host.grid_columnconfigure(3, weight=1)
+
+        # Line numbers gutter (unselectable)
+        ln = tk.Canvas(host, width=48, bg=ln_bg, highlightthickness=0, bd=0, takefocus=0)
+        ln.grid(row=0, column=0, sticky="ns")
+        ln.bind("<Button-1>", lambda e: "break")
+
+        # Safety faces gutter (unselectable)
+        face = tk.Canvas(host, width=18, bg=face_bg, highlightthickness=0, bd=0, takefocus=0)
+        face.grid(row=0, column=1, sticky="ns")
+        face.bind("<Button-1>", lambda e: "break")
+
+        # Soft spacer
+        sep = tk.Frame(host, width=1, bg=DARK_PANEL, highlightthickness=0, bd=0)
+        sep.grid(row=0, column=2, sticky="ns")
+
+        # Text + Scrollbar
+        txt = tk.Text(host, wrap="none", undo=True,
+                    background=txt_bg, foreground=FG_TEXT, insertbackground=FG_TEXT,
+                    relief="flat", bd=0, padx=8, pady=6, font=mono, highlightthickness=0)
+        txt.grid(row=0, column=3, sticky="nsew")
+        scroll = ttk.Scrollbar(host, orient="vertical", command=txt.yview)
+        scroll.grid(row=0, column=4, sticky="ns")
+        txt.configure(yscrollcommand=lambda first, last, tid=None: self._on_text_yscroll(id(frame), first, last))
+
+        # Model
+        tab = {
+            "frame": frame,
+            "host": host,
+            "ln": ln,
+            "face": face,
+            "text": txt,
+            "scroll": scroll,
+            "path": path,
+            "title": title,
+            "encoding": encoding,
+            "add_bom": add_bom,
+            "dirty": False,
+            "last_paint": 0.0,
+            "repaint_due": None,
+            "squelch_mod": 0,  # guard for spurious <<Modified>> during programmatic edits
+        }
+        tid = id(frame)
+        self._tabs[tid] = tab
+
+        # Fill content under a squelch window so <<Modified>> won't mark dirty
+        self._mod_squelch_begin(tab)
+        try:
+            if initial_text:
+                txt.insert("1.0", self._normalize_eols(initial_text))
+            txt.edit_reset()
+            txt.edit_modified(False)
+        finally:
+            # End squelch after idle in case <<Modified>> is delivered late
+            self.after_idle(lambda t=tab: (self._mod_squelch_end(t), t["text"].edit_modified(False)))
+
+        # Bindings
+        txt.bind("<<Modified>>", lambda _e, t=tid: self._on_modified(t), add="+")
+        txt.bind("<KeyRelease>", lambda _e, t=tid: self._on_text_activity(t), add="+")
+        txt.bind("<ButtonRelease-1>", lambda _e, t=tid: self._on_text_activity(t), add="+")
+        txt.bind("<Configure>", lambda _e, t=tid: self._schedule_draw_gutters(t), add="+")
+        txt.bind("<MouseWheel>", lambda _e, t=tid: self._schedule_draw_gutters(t), add="+")
+        txt.bind("<Button-4>", lambda _e, t=tid: self._schedule_draw_gutters(t), add="+")
+        txt.bind("<Button-5>", lambda _e, t=tid: self._schedule_draw_gutters(t), add="+")
+        txt.bind("<Control-a>", lambda e, t=tid: (txt.tag_add("sel", "1.0", "end-1c"), "break"))
+
+        # Click unhappy faces to sanitize that line
+        face.bind("<Button-1>", lambda e, t=tid: self._on_face_click(t, e))
+
+        # Title & first paint
+        self._retitle_tab(tid, title, dirty=False)
+        self._update_status_for_tab(tab)
+        self._schedule_draw_gutters(tid, fast=True)
+        return tid
+
     def _on_modified(self, tid: int):
         tab = self._tabs.get(tid)
         if not tab:
             return
-        # Ignore spurious <<Modified>> during initial setup
-        if tab.get("ignore_modified"):
+        # Ignore programmatic edits
+        if int(tab.get("squelch_mod", 0)) > 0:
             try:
                 tab["text"].edit_modified(False)
             except Exception:
@@ -1000,13 +916,260 @@ class TextPanel:
             return
 
         tab["dirty"] = True
-        # keep tk's modified flag bouncing so future edits still trigger
+        # Clear Tk's modified flag so future edits still fire <<Modified>>
         try:
             tab["text"].edit_modified(False)
         except Exception:
             pass
-        # star in tab title + status
+
+        # Star in tab title + status
         base_title = tab.get("title") or (tab.get("path").name if tab.get("path") else "Untitled")
         self._retitle_tab(tid, base_title, dirty=True)
         self._update_status_for_tab(tab)
         self._schedule_draw_gutters(tid, fast=False)
+
+    def _revert_from_disk(self, tab: Dict):
+        p = tab.get("path")
+        if not p:
+            return
+        if not messagebox.askyesno("Revert", f"Discard changes and reload from disk?\n\n{p}"):
+            return
+
+        try:
+            data = read_text_bytes(p)
+            text = decode_bytes(data, tab.get("encoding") or "utf-8", "strict")
+            text = self._normalize_eols(text)
+        except Exception as e:
+            messagebox.showerror("Revert failed", f"Could not reload {p}:\n{e}")
+            return
+
+        txt: tk.Text = tab["text"]
+
+        # Replace under squelch
+        self._mod_squelch_begin(tab)
+        try:
+            txt.delete("1.0", "end")
+            txt.insert("1.0", text)
+            tab["dirty"] = False
+            try:
+                txt.edit_modified(False)
+                txt.edit_reset()
+            except Exception:
+                pass
+        finally:
+            self.after_idle(lambda t=tab: (self._mod_squelch_end(t), t["text"].edit_modified(False)))
+
+        # Retitle & status (no star)
+        title = (tab["path"].name if tab.get("path") else tab.get("title") or "Untitled")
+        self._retitle_tab(id(tab["frame"]), title, dirty=False)
+        self._update_status_for_tab(tab)
+        self._schedule_draw_gutters(id(tab["frame"]), fast=True)
+
+    def _save_tab_to_path(self, tab: Dict, target: Path):
+        """Save the current tab to path `target`; preserve clean state after save."""
+        s = tab["text"].get("1.0", "end-1c")
+        try:
+            # editor_io.encode_text respects "utf-8-with-bom" as an encoding label
+            from editor_io import encode_text
+            enc = tab.get("encoding") or "utf-8"
+            data = encode_text(s, enc)
+            save_to_path(target, data)
+        except Exception as e:
+            messagebox.showerror("Save failed", f"Could not save to {target}:\n{e}")
+            return
+
+        # Update model under squelch (avoid <<Modified>> from relabel/flag flips)
+        txt: tk.Text = tab["text"]
+        self._mod_squelch_begin(tab)
+        try:
+            tab["path"] = Path(target)
+            tab["dirty"] = False
+            self._retitle_tab(id(tab["frame"]), tab["path"].name, dirty=False)
+            try:
+                txt.edit_modified(False)
+                txt.edit_reset()
+            except Exception:
+                pass
+        finally:
+            self.after_idle(lambda t=tab: (self._mod_squelch_end(t), t["text"].edit_modified(False)))
+
+        self._update_status_for_tab(tab)
+
+    def open_with_zeropad(self, path: Path, override_encoding: str | None = None):
+        """Open file; normalize EOLs to LF. If override_encoding is provided, use it."""
+        from tkinter import messagebox
+        from editor_io import read_text_bytes, decode_bytes, suggest_open_encoding
+        try:
+            enc = override_encoding or suggest_open_encoding(path)
+            data = read_text_bytes(path)
+            text = decode_bytes(data, enc, "strict")
+        except Exception as e:
+            messagebox.showerror("Open failed", f"Could not open {path}:\n{e}")
+            return
+
+        text = self._normalize_eols(text)
+        frame = tk.Frame(self._nb, bg=DARK_PANEL)
+        tid = self._mk_tab_ui(frame, title=Path(path).name,
+                            path=Path(path), initial_text=text,
+                            encoding=enc, add_bom=(enc.lower() == "utf-8-with-bom"))
+        self._add_tab_to_nb(frame, title=Path(path).name)
+        self._nb.select(frame)
+
+        # Belt & suspenders: ensure the tab is clean right after creation
+        self._force_clean_state(tid)
+        return tid
+
+
+    def _bind_tab_mouse(self):
+        """
+        Bind a release-time hit-test on the notebook itself.
+        We let ttk handle the press/selection, then on ButtonRelease-1
+        we compute whether the pointer was over the close '✕' zone or the '+' tab.
+        """
+        # Remove any old bindings you might still have
+        try:
+            self._nb.unbind("<Button-1>")
+        except Exception:
+            pass
+        # Bind on release so ttk’s own selection already happened
+        self._nb.bind("<ButtonRelease-1>", self._nb_pointer_release, add="+")
+
+
+    def _nb_pointer_release(self, event):
+        """
+        After ttk processes the click, figure out where the pointer ended up:
+        • If on the '+' tab (index 0) → create a new tab (consume).
+        • If on any other tab and inside the rightmost '✕' hit zone → close that tab (consume).
+        • Otherwise let ttk keep the normal selection (do nothing).
+        """
+        nb = self._nb
+        if not nb.winfo_ismapped():
+            return
+
+        # Convert to notebook-relative coords (tab bboxes are in notebook coords)
+        try:
+            nx = event.x_root - nb.winfo_rootx()
+            ny = event.y_root - nb.winfo_rooty()
+        except Exception:
+            return
+
+        # Which tab are we over?
+        try:
+            idx = nb.index(f"@{nx},{ny}")
+        except Exception:
+            return  # not over a tab label
+
+        # Get its bbox; bail if we can’t
+        try:
+            bx, by, bw, bh = nb.bbox(idx)
+        except Exception:
+            return
+
+        inside = (bx <= nx <= bx + bw) and (by <= ny <= by + bh)
+        if not inside:
+            return
+
+        # '+' tab logic (index 0)
+        if idx == 0:
+            # treat any click within the '+' tab bbox as "new tab"
+            self._create_empty_tab_and_select()
+            return "break"
+
+        # Close zone: a DPI-aware strip at the far right of the tab label
+        close_w = max(14, min(28, int(round(bh * 0.8))))
+        is_close_zone = (nx >= bx + bw - close_w)
+
+        if is_close_zone:
+            tabs = nb.tabs()
+            if 0 <= idx < len(tabs):
+                tab_widget = tabs[idx]
+                if tab_widget != str(self._plus_tab):
+                    # ensure the clicked tab is active (menus' Ctrl+W path expects that)
+                    try:
+                        nb.select(tab_widget)
+                    except Exception:
+                        pass
+                    # Close via the same public API bound to Ctrl+W
+                    self.file_close_active_tab()
+                    return "break"
+        # else: normal click → keep selection as-is
+
+    def _install_nb_close_binding(self):
+        """
+        Install a highest-priority click handler for the notebook tabs.
+        IMPORTANT: ttk's notebook often delivers <Button-1> to an internal child,
+        not the notebook itself. We therefore:
+        • use a custom bindtag placed FIRST in the notebook's bindtags
+        • do NOT assume event.widget is the notebook
+        • convert event.x/y to notebook-relative coords using root coordinates
+        """
+        self._NB_CLOSE_TAG = "ZP_NB_CLOSE"
+        # Put our tag first so we run before widget/class/default bindings
+        tags = list(self._nb.bindtags())
+        if self._NB_CLOSE_TAG in tags:
+            tags.remove(self._NB_CLOSE_TAG)
+        tags.insert(0, self._NB_CLOSE_TAG)
+        self._nb.bindtags(tuple(tags))
+
+        # Bind on press so we can consume the event before ttk selects the tab
+        self.bind_class(self._NB_CLOSE_TAG, "<Button-1>", self._nb_click_intercept, add="+")
+
+    def _nb_click_intercept(self, event):
+        """
+        High-priority tab-click hook that:
+        • creates a new tab when '+' is clicked
+        • closes a tab only if the click is inside the ✕ zone
+        • otherwise lets ttk handle normal selection
+
+        NOTE: We never rely on event.widget being the notebook. We compute
+        notebook-relative coordinates from the root pointer position.
+        """
+        # If the notebook isn't mapped, bail
+        if not self._nb.winfo_ismapped():
+            return
+
+        # Convert this event's position to NOTEBOOK-relative coords
+        try:
+            nx = event.x_root - self._nb.winfo_rootx()
+            ny = event.y_root - self._nb.winfo_rooty()
+        except Exception:
+            return
+
+        # Which tab index was hit? (use notebook-relative coords!)
+        try:
+            idx = self._nb.index(f"@{nx},{ny}")
+        except Exception:
+            return  # not over a tab
+
+        # Get the bbox of that tab in notebook coords
+        try:
+            bx, by, bw, bh = self._nb.bbox(idx)
+        except Exception:
+            return
+
+        # Must be inside the tab's bbox
+        if not (bx <= nx <= bx + bw and by <= ny <= by + bh):
+            return
+
+        # '+' tab?
+        if idx == 0:
+            # Only trigger when clicking the label area (safe enough: inside bbox)
+            self._create_empty_tab_and_select()
+            return "break"  # consume so ttk doesn't also try to "select" '+'
+
+        # Close zone: a DPI-aware strip on the far right of the tab label
+        close_w = max(14, min(28, int(round(bh * 0.8))))
+        if nx >= bx + bw - close_w:
+            tabs = self._nb.tabs()
+            if 0 <= idx < len(tabs):
+                tab_widget = tabs[idx]
+                if tab_widget != str(self._plus_tab):
+                    # ensure the tab to close is the active one, so Ctrl+W path matches
+                    try:
+                        self._nb.select(tab_widget)
+                    except Exception:
+                        pass
+                    # Use the same public API bound to Ctrl+W
+                    self.file_close_active_tab()
+                    return "break"  # stop ttk default from re-selecting
+        # otherwise, not a close click → let ttk select normally

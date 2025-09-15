@@ -1,3 +1,4 @@
+# file_panel.py
 """
 FILE PANEL (Zeropad)
 
@@ -430,48 +431,6 @@ class FilePanel:
         caps["safe"] = min(caps.get("safe", 28), 28)
         return caps
 
-    def _apply_fixed_widths(self):
-        vis = self._visible_cols()
-        if not vis:
-            return
-        tree_w = max(self.tree.winfo_width(), 1)
-        if tree_w <= 2:
-            self.tree.after(16, self._apply_fixed_widths)
-            return
-
-        caps = self._dynamic_max_caps()
-        flex = self._filename_flex_col()
-
-        fixed_sum = 0
-        col_widths: Dict[str, int] = {}
-        for c in vis:
-            if c == flex:
-                continue
-            tgt = self._col_target_px.get(c, self._col_min_px.get(c, 50))
-            w = max(self._col_min_px.get(c, 50), min(caps.get(c, 10_000), int(tgt)))
-            col_widths[c] = w
-            fixed_sum += w
-
-        remain = tree_w - fixed_sum
-        flex_min = self._col_min_px.get(flex, 80)
-        flex_w = max(flex_min, remain)
-        col_widths[flex] = flex_w
-
-        for c in vis:
-            if c == "#0":
-                anchor = "center" if (self.col_type.get() and self._mime_enabled()) else self._col_anchor_base.get("#0", "w")
-            else:
-                anchor = self._col_anchor_base.get(c, "w")
-            self.tree.column(c, width=max(1, col_widths[c]), stretch=True, anchor=anchor)
-
-        # Park hidden data columns
-        for c in ("name", "safe", "size", "modified", "mode"):
-            if c not in self.tree["columns"]:
-                continue
-            if c not in vis:
-                self.tree.column(c, width=self._col_min_px.get(c, 50), stretch=False,
-                                 anchor=self._col_anchor_base.get(c, "w"))
-
     # capture user resize to update fixed target widths
     def _on_tree_press(self, event):
         self._resizing_col = (self.tree.identify_region(event.x, event.y) == "separator")
@@ -853,145 +812,6 @@ class FilePanel:
         except Exception:
             return None
 
-
-    def _on_tree_double_click(self, event):
-        """React only to double-clicks on actual rows.
-        - Files (role='cwd-file')  → select it, then delegate to File→Open Selected.
-        - Directories (breadcrumbs/cwd-dir) → cd into
-        - 'Create New …' rows → enter create mode
-        - Headings/separators/empty space → ignore
-        """
-        region = self.tree.identify_region(event.x, event.y)
-        if region not in ("tree", "cell"):  # ignore heading, separator, nothing
-            return
-
-        row_id = self.tree.identify_row(event.y)
-        if not row_id:
-            return
-
-        info = self._node.get(row_id, {})
-        kind = info.get("kind")
-        role = info.get("role")
-        path = info.get("path")
-
-        # Only show the open dialog for files that live in the cwd list
-        if kind == "file" and role == "cwd-file" and path:
-            # Make sure the UI selection matches the clicked row before delegating
-            try:
-                self.tree.selection_set(row_id)
-                self.tree.focus(row_id)
-            except Exception:
-                pass
-            # Track selection for menus._menu_open_selected()
-            self._selected_path = Path(path)
-            self._create_mode = None
-            # Delegate to the same logic used by File → Open Selected
-            if hasattr(self, "_menu_open_selected") and callable(getattr(self, "_menu_open_selected")):
-                self._menu_open_selected()
-            else:
-                # Fallback: open chooser directly (shouldn't normally happen)
-                self._prompt_open_file(Path(path))
-            return
-
-        # Navigate on directories (breadcrumbs or cwd)
-        if kind == "dir" and path and role in ("breadcrumb", "cwd-dir"):
-            self.set_cwd(path)
-            return
-
-        # “Create new …” rows
-        if kind == "create_file":
-            self._enter_create_mode("file")
-            return
-        if kind == "create_dir":
-            self._enter_create_mode("dir")
-            return
-
-        # Anything else: no-op
-
-    def _prompt_open_file(self, path: Path):
-        """Three-way chooser: Cancel, System Default (xdg-open), Zeropad editor."""
-        win = tk.Toplevel(self)
-        win.withdraw()  # build off-screen to avoid flicker
-        win.title("Open File")
-        win.configure(bg=self._BG_PANEL)
-        win.transient(self)  # keep above parent
-
-        # Content
-        tk.Label(
-            win,
-            text=f"Open:\n{path}",
-            bg=self._BG_PANEL,
-            fg=self._FG_TEXT,
-            justify="left"
-        ).pack(side="top", anchor="w", padx=12, pady=12)
-
-        btns = tk.Frame(win, bg=self._BG_PANEL)
-        btns.pack(side="top", fill="x", padx=12, pady=12)
-
-        def do_cancel():
-            try:
-                win.grab_release()
-            except Exception:
-                pass
-            win.destroy()
-
-        def do_system():
-            try:
-                subprocess.Popen(
-                    ["xdg-open", str(path)],
-                    stdout=subprocess.DEVNULL,
-                    stderr=subprocess.DEVNULL
-                )
-            except Exception as e:
-                messagebox.showerror("Open Failed", f"xdg-open error:\n{e}")
-            do_cancel()
-
-        def do_zeropad():
-            # Close dialog first (releases grab), then open the file in the next idle tick.
-            do_cancel()
-            # TextPanel provides open_with_zeropad(Path)
-            if hasattr(self, "open_with_zeropad"):
-                self.after_idle(lambda: self.open_with_zeropad(Path(path)))
-            else:
-                messagebox.showerror("Unavailable", "Open in Zeropad is not wired up in TextPanel.")
-
-        ttk.Button(btns, text="Cancel", style="Secondary.TButton", command=do_cancel).pack(side="right")
-        ttk.Button(btns, text="Open in Zeropad", style="Primary.TButton", command=do_zeropad)\
-            .pack(side="right", padx=(0, 8))
-        ttk.Button(btns, text="Open with System Default", style="Secondary.TButton", command=do_system)\
-            .pack(side="right", padx=(0, 8))
-
-        win.bind("<Escape>", lambda e: do_cancel())
-        win.protocol("WM_DELETE_WINDOW", do_cancel)
-
-        # Layout/center, then map & raise
-        win.update_idletasks()
-        try:
-            px, py = self.winfo_rootx(), self.winfo_rooty()
-            pw, ph = self.winfo_width(), self.winfo_height()
-            ww, wh = win.winfo_reqwidth(), win.winfo_reqheight()
-            x = px + max(0, (pw - ww) // 2)
-            y = py + max(0, (ph - wh) // 3)
-            win.geometry(f"+{x}+{y}")
-        except Exception:
-            pass
-
-        win.deiconify()
-        win.lift()
-
-        # Take grab only after the window is viewable
-        def _try_grab():
-            if win.winfo_viewable():
-                try:
-                    win.grab_set()
-                except Exception:
-                    win.after(10, _try_grab)
-            else:
-                win.after(10, _try_grab)
-
-        _try_grab()
-        win.focus_set()
-        win.wait_window()
 
     def _first_selection(self):
         sels = self.tree.selection()
@@ -1582,9 +1402,191 @@ class FilePanel:
         except Exception:
             return None
 
-    def _resolve_icon_path(self, icon_name: str) -> Optional[Path]:
+    def _load_icon_image(self, icon_name: str, size: int = 16) -> Optional[tk.PhotoImage]:
         if not icon_name:
             return None
+        key = f"{icon_name}@{size}"
+        img = self._img_cache.get(key)
+        if img:
+            return img
+
+        path = self._resolve_icon_path(icon_name)
+        if path is None:
+            return None
+
+        try:
+            suffix = path.suffix.lower()
+            if suffix == ".png":
+                img = tk.PhotoImage(file=str(path))
+            elif suffix == ".svg" and _HAS_GDKPB:
+                pb = GdkPixbuf.Pixbuf.new_from_file_at_size(str(path), size, size)
+                img = self._pixbuf_to_photoimage(pb)
+            else:
+                img = None
+            if img:
+                self._img_cache[key] = img
+                return img
+        except Exception:
+            return None
+        return None
+
+    def _open_with_system(self, path: Path):
+        """Open a file or folder with the OS default handler (cross-platform)."""
+        import sys
+        try:
+            if os.name == "nt":
+                os.startfile(str(path))  # type: ignore[attr-defined]
+            elif sys.platform == "darwin":
+                subprocess.Popen(["open", str(path)],
+                                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            else:
+                subprocess.Popen(["xdg-open", str(path)],
+                                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        except Exception as e:
+            messagebox.showerror("Open Failed", f"Could not open with system default:\n{e}")
+
+    def _on_tree_double_click(self, event):
+        """React only to double-clicks on actual rows.
+        - Files (role='cwd-file')  → ask: System vs Zeropad
+        - Directories (breadcrumbs/cwd-dir) → cd into
+        - 'Create New …' rows → enter create mode
+        - Headings/separators/empty space → ignore
+        """
+        region = self.tree.identify_region(event.x, event.y)
+        if region not in ("tree", "cell"):  # ignore heading, separator, nothing
+            return
+
+        row_id = self.tree.identify_row(event.y)
+        if not row_id:
+            return
+
+        info = self._node.get(row_id, {})
+        kind = info.get("kind")
+        role = info.get("role")
+        path = info.get("path")
+
+        # Files in cwd → show unified chooser (system vs zeropad)
+        if kind == "file" and role == "cwd-file" and path:
+            # sync selection to the clicked row
+            try:
+                self.tree.selection_set(row_id)
+                self.tree.focus(row_id)
+            except Exception:
+                pass
+
+            self._selected_path = Path(path)
+            self._create_mode = None
+
+            # Import lazily to avoid changing module-level imports
+            try:
+                from editor_io import choose_open_selected
+            except Exception as e:
+                messagebox.showerror("Open Failed", f"Open dialog unavailable:\n{e}")
+                return
+
+            choice = choose_open_selected(self, Path(path))
+            if choice == "system":
+                self._open_with_system(Path(path))
+            elif choice == "zeropad":
+                if hasattr(self, "open_with_zeropad") and callable(getattr(self, "open_with_zeropad")):
+                    # defer to avoid focus/grab shenanigans
+                    self.after_idle(lambda p=Path(path): self.open_with_zeropad(p))
+                else:
+                    messagebox.showerror("Unavailable", "Open in Zeropad is not wired up.")
+            # None → cancel
+            return
+
+        # Navigate on directories (breadcrumbs or cwd)
+        if kind == "dir" and path and role in ("breadcrumb", "cwd-dir"):
+            self.set_cwd(path)
+            return
+
+        # “Create new …” rows
+        if kind == "create_file":
+            self._enter_create_mode("file")
+            return
+        if kind == "create_dir":
+            self._enter_create_mode("dir")
+            return
+
+        # Anything else: no-op
+
+    def _apply_fixed_widths(self):
+        """
+        Fixed+flex layout:
+        - All non-filename visible columns are fixed to their target pixel widths (clamped).
+        - The filename column absorbs the remaining width.
+        - Only the flex column is stretchable; fixed columns do not stretch.
+        """
+        vis = self._visible_cols()
+        if not vis:
+            return
+
+        tree_w = max(self.tree.winfo_width(), 1)
+        if tree_w <= 2:
+            # try again after the widget finishes an initial layout pass
+            self.tree.after(16, self._apply_fixed_widths)
+            return
+
+        caps = self._dynamic_max_caps()
+        flex = self._filename_flex_col()
+
+        # sum fixed widths
+        fixed_sum = 0
+        col_widths: Dict[str, int] = {}
+        for c in vis:
+            if c == flex:
+                continue
+            tgt = self._col_target_px.get(c, self._col_min_px.get(c, 50))
+            w = max(self._col_min_px.get(c, 50), min(caps.get(c, 10_000), int(tgt)))
+            col_widths[c] = w
+            fixed_sum += w
+
+        # flex takes the rest (no explicit max)
+        remain = tree_w - fixed_sum
+        flex_min = self._col_min_px.get(flex, 80)
+        flex_w = max(flex_min, remain)
+        col_widths[flex] = flex_w
+
+        # apply widths; only flex stretches
+        for c in vis:
+            if c == "#0":
+                anchor = "center" if (self.col_type.get() and self._mime_enabled()) else self._col_anchor_base.get("#0", "w")
+            else:
+                anchor = self._col_anchor_base.get(c, "w")
+            is_flex = (c == flex)
+            self.tree.column(c,
+                            width=max(1, col_widths[c]),
+                            stretch=is_flex,
+                            anchor=anchor)
+
+        # park hidden data columns with minimal width and no stretch
+        for c in ("name", "safe", "size", "modified", "mode"):
+            if c not in self.tree["columns"]:
+                continue
+            if c not in vis:
+                self.tree.column(c,
+                                width=self._col_min_px.get(c, 50),
+                                stretch=False,
+                                anchor=self._col_anchor_base.get(c, "w"))
+
+    def _resolve_icon_path(self, icon_name: str) -> Optional[Path]:
+        """
+        Resolve an icon name to a concrete file path, with a small per-instance cache.
+        Accepts names with/without extension; searches common XDG icon locations.
+        """
+        if not icon_name:
+            return None
+
+        # tiny cache avoiding repeated FS scans
+        cache: Dict[str, Optional[Path]] = getattr(self, "_icon_path_cache", None)
+        if cache is None:
+            cache = {}
+            setattr(self, "_icon_path_cache", cache)
+
+        if icon_name in cache:
+            return cache[icon_name]
+
         names = {icon_name}
         if icon_name.endswith(".png") or icon_name.endswith(".svg"):
             names.add(icon_name.rsplit(".", 1)[0])
@@ -1614,6 +1616,7 @@ class FilePanel:
         sizes = ["16x16", "22x22", "24x24", "32x32"]
         cats  = ["mimetypes", "places", "apps", "status"]
 
+        # 1) themed raster dirs (size/category)
         for tdir in theme_dirs:
             for sz in sizes:
                 for cat in cats:
@@ -1623,8 +1626,10 @@ class FilePanel:
                     for nm in list(names):
                         p = d / nm
                         if p.is_file():
+                            cache[icon_name] = p
                             return p
 
+        # 2) scalable SVGs
         for tdir in theme_dirs:
             d = tdir / "scalable"
             if not d.exists():
@@ -1636,40 +1641,17 @@ class FilePanel:
                 for nm in list(names):
                     p = cdir / (nm if nm.endswith(".svg") else nm + ".svg")
                     if p.is_file():
+                        cache[icon_name] = p
                         return p
 
+        # 3) direct hits under roots
         for r in roots:
             if Path(r).exists():
                 for nm in list(names):
                     p = Path(r) / nm
                     if p.is_file():
+                        cache[icon_name] = p
                         return p
-        return None
 
-    def _load_icon_image(self, icon_name: str, size: int = 16) -> Optional[tk.PhotoImage]:
-        if not icon_name:
-            return None
-        key = f"{icon_name}@{size}"
-        img = self._img_cache.get(key)
-        if img:
-            return img
-
-        path = self._resolve_icon_path(icon_name)
-        if path is None:
-            return None
-
-        try:
-            suffix = path.suffix.lower()
-            if suffix == ".png":
-                img = tk.PhotoImage(file=str(path))
-            elif suffix == ".svg" and _HAS_GDKPB:
-                pb = GdkPixbuf.Pixbuf.new_from_file_at_size(str(path), size, size)
-                img = self._pixbuf_to_photoimage(pb)
-            else:
-                img = None
-            if img:
-                self._img_cache[key] = img
-                return img
-        except Exception:
-            return None
+        cache[icon_name] = None
         return None

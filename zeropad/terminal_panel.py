@@ -1,3 +1,4 @@
+# terminal_panel.py
 import os
 import shlex
 import shutil
@@ -28,79 +29,6 @@ class TerminalPanel:
     POLL_MS = 800              # tmux cwd poll
     SIZE_PERIODIC_MS = 1200    # periodic size reconcile (safety net)
     RESPAWN_COOLDOWN = 1.0     # seconds
-
-    def init_terminal_panel(self):
-        palette = getattr(self, "_palette", {})
-        self._TERM_BG = palette.get("BG_CANVAS", "#0b1220")
-        self._TERM_FG = palette.get("FG_TEXT",   "#e5e7eb")
-
-        # Unique tmux session + private socket dir/path per run
-        self.TMUX_SESSION = "zeropad"
-        run_id = f"{os.getpid()}-{uuid.uuid4().hex[:8]}"
-        self.TMUX_DIR  = Path.home() / ".cache" / "zeropad-tmux" / run_id
-        self.TMUX_SOCK = self.TMUX_DIR / "sock"
-
-        # Terminal pane
-        self.terminal = tk.Frame(self.vpaned, bg=self._TERM_BG)
-        self._term_container = tk.Frame(self.terminal, bg=self._TERM_BG, highlightthickness=0, bd=0)
-        self._term_container.pack(fill="both", expand=True)
-
-        # Processes/state
-        self._xterm_proc: subprocess.Popen | None = None
-        self._xterm_started = False
-        self._tmux_ready = False
-        self._last_tmux_cwd: Path | None = None
-        self._pending_cd: Path | None = None
-
-        # Size tracking
-        self._cell_w = 8.0
-        self._cell_h = 16.0
-        self._client_tty: str | None = None
-
-        # Xlib
-        self._x_dpy = None
-        self._x_child = None
-
-        # Key passthrough / intercept
-        self._terminal_active = False
-        self._intercept_tag = "ZP_TermIntercept"
-        self._intercept_installed = False
-
-        # Respawn guard
-        self._last_respawn = 0.0
-
-        # Private tmux socket dir (0700)
-        try:
-            self.TMUX_DIR.mkdir(mode=0o700, parents=True, exist_ok=False)
-        except FileExistsError:
-            try:
-                os.chmod(self.TMUX_DIR, 0o700)
-            except Exception:
-                pass
-        except Exception as e:
-            self._show_error(f"Failed to create tmux dir: {e}")
-            return
-
-        # Spawn xterm/tmux when container is mapped
-        self.after(50, self._maybe_spawn_xterm)
-
-        # --- IMMEDIATE resize on every container <Configure> ---
-        self._term_container.bind("<Configure>", self._on_container_configure)
-
-        # Activation: clicking/focusing terminal enables intercept
-        self._term_container.bind("<Button-1>", self._on_terminal_click)
-        self._term_container.bind("<FocusIn>",  self._on_terminal_focus)
-        self._term_container.bind("<FocusOut>", self._on_terminal_blur)
-
-        # Bind handlers to our custom high-priority tag
-        # (Only Ctrl+D now; Ctrl+Z removed.)
-        self.bind_class(self._intercept_tag, "<Control-Key-d>", self._intercept_ctrl, add="+")
-
-        # Periodic size reconcile (safety net) + cleanup hook
-        self.after(self.SIZE_PERIODIC_MS, self._periodic_size_reconcile)
-        if not hasattr(self, "_cleanup_hooks"):
-            self._cleanup_hooks = []
-        self._cleanup_hooks.append(self._terminal_cleanup)
 
     # ---------- Activation & global intercept ----------
 
@@ -309,37 +237,11 @@ class TerminalPanel:
 
     # ---------- Timers ----------
 
-    def _poll_tmux_cwd(self):
-        try:
-            self._ensure_alive()
-            if not self._tmux_ready:
-                self._tmux_ready = self._tmux_has_session()
-            if self._tmux_ready:
-                pane_cwd = self._tmux_get_cwd()
-                if pane_cwd:
-                    p = Path(pane_cwd).resolve()
-                    if self._last_tmux_cwd is None or p != self._last_tmux_cwd:
-                        self._last_tmux_cwd = p
-                        if getattr(self, "cwd", None) is None or p != Path(self.cwd).resolve():
-                            try:
-                                self.set_cwd(p, origin="terminal")
-                            except TypeError:
-                                self.set_cwd(p)
-        finally:
-            self.after(self.POLL_MS, self._poll_tmux_cwd)
-
     # ---------- Immediate sizing ----------
 
     def _on_container_configure(self, _e):
         """Immediate resize on every geometry change."""
         self._immediate_resize()
-
-    def _periodic_size_reconcile(self):
-        """Safety net to keep sizes in sync (handles rare missed events)."""
-        try:
-            self._immediate_resize()
-        finally:
-            self.after(self.SIZE_PERIODIC_MS, self._periodic_size_reconcile)
 
     def _immediate_resize(self):
         if not self._xterm_started:
@@ -515,57 +417,6 @@ class TerminalPanel:
             subprocess.run([tmux, "-S", str(self.TMUX_SOCK), *args],
                            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False)
 
-    # ---------- Shutdown ----------
-
-    def _terminal_cleanup(self):
-        p = self._xterm_proc
-        if p:
-            try:
-                os.killpg(p.pid, signal.SIGTERM)
-            except Exception:
-                pass
-            try:
-                p.wait(timeout=1.0)
-            except Exception:
-                try:
-                    os.killpg(p.pid, signal.SIGKILL)
-                except Exception:
-                    pass
-            self._xterm_proc = None
-
-        tmux = shutil.which("tmux")
-        if tmux:
-            try:
-                subprocess.run([tmux, "-S", str(self.TMUX_SOCK), "kill-server"],
-                               stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False)
-            except Exception:
-                pass
-
-        try:
-            if self._x_dpy is not None:
-                self._x_dpy.close()
-        except Exception:
-            pass
-        self._x_dpy = None
-        self._x_child = None
-
-        try:
-            if self.TMUX_DIR.exists():
-                for entry in self.TMUX_DIR.iterdir():
-                    try:
-                        entry.unlink()
-                    except Exception:
-                        pass
-                self.TMUX_DIR.rmdir()
-        except Exception:
-            pass
-
-        self._xterm_started = False
-        self._tmux_ready = False
-        self._last_tmux_cwd = None
-        self._pending_cd = None
-        self._client_tty = None
-
     # ---------- UI helpers ----------
 
     def _show_missing_tools(self, xterm_path, tmux_path):
@@ -587,3 +438,311 @@ class TerminalPanel:
             c.destroy()
         tk.Label(self._term_container, text=text, bg=self._TERM_BG, fg=self._TERM_FG, justify="left")\
           .pack(anchor="nw", padx=12, pady=12)
+
+    def _poll_tmux_cwd(self):
+        """
+        Poll tmux for the current pane's CWD and synchronize with the app.
+        Safe-reschedules itself and aborts quietly if the widget/app is going away.
+        """
+        try:
+            # If the widget hierarchy is already gone, do not reschedule.
+            if not self.winfo_exists():
+                return
+
+            self._ensure_alive()
+            if not self._tmux_ready:
+                self._tmux_ready = self._tmux_has_session()
+            if self._tmux_ready:
+                pane_cwd = self._tmux_get_cwd()
+                if pane_cwd:
+                    p = Path(pane_cwd).resolve()
+                    if self._last_tmux_cwd is None or p != self._last_tmux_cwd:
+                        self._last_tmux_cwd = p
+                        # Only push to Zeropad when it differs (avoid loops)
+                        try:
+                            if getattr(self, "cwd", None) is None or p != Path(self.cwd).resolve():
+                                try:
+                                    self.set_cwd(p, origin="terminal")
+                                except TypeError:
+                                    # older setter signature
+                                    self.set_cwd(p)
+                        except Exception:
+                            pass
+        finally:
+            # Reschedule only if we’re still alive
+            try:
+                if self.winfo_exists():
+                    self._poll_after_id = self.after(self.POLL_MS, self._poll_tmux_cwd)
+            except Exception:
+                self._poll_after_id = None
+
+    def _periodic_size_reconcile(self):
+        """
+        Safety net to keep sizes in sync (handles rare missed events).
+        Safe-reschedules itself and aborts quietly if the widget/app is going away.
+        """
+        try:
+            if not self.winfo_exists():
+                return
+            self._immediate_resize()
+        finally:
+            try:
+                if self.winfo_exists():
+                    self._size_after_id = self.after(self.SIZE_PERIODIC_MS, self._periodic_size_reconcile)
+            except Exception:
+                self._size_after_id = None
+
+    def _terminal_cleanup(self):
+        """
+        Stop timers, remove high-priority intercept tags, kill xterm/tmux, and
+        clean tmp resources. Idempotent and safe to call multiple times.
+        """
+        # Cancel timers first to stop rescheduling loops
+        for after_id_attr in ("_poll_after_id", "_size_after_id"):
+            aid = getattr(self, after_id_attr, None)
+            if aid:
+                try:
+                    self.after_cancel(aid)
+                except Exception:
+                    pass
+                setattr(self, after_id_attr, None)
+
+        # Remove intercept tag from all widgets so global shortcuts return to normal
+        if self._intercept_installed:
+            try:
+                for w in self._walk_widgets(self):
+                    try:
+                        tags = list(w.bindtags())
+                        if self._intercept_tag in tags:
+                            tags.remove(self._intercept_tag)
+                            w.bindtags(tuple(tags))
+                    except Exception:
+                        continue
+            except Exception:
+                pass
+            self._intercept_installed = False
+
+        # Terminate xterm process group (if still present)
+        p = getattr(self, "_xterm_proc", None)
+        if p:
+            try:
+                os.killpg(p.pid, signal.SIGTERM)
+            except Exception:
+                pass
+            try:
+                p.wait(timeout=1.0)
+            except Exception:
+                try:
+                    os.killpg(p.pid, signal.SIGKILL)
+                except Exception:
+                    pass
+            self._xterm_proc = None
+
+        # Kill tmux server on the private socket
+        tmux = shutil.which("tmux")
+        if tmux:
+            try:
+                subprocess.run([tmux, "-S", str(self.TMUX_SOCK), "kill-server"],
+                            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False)
+            except Exception:
+                pass
+
+        # Close X display (if open)
+        try:
+            if getattr(self, "_x_dpy", None) is not None:
+                self._x_dpy.close()
+        except Exception:
+            pass
+        self._x_dpy = None
+        self._x_child = None
+
+        # Remove the private tmux dir
+        try:
+            if hasattr(self, "TMUX_DIR") and self.TMUX_DIR.exists():
+                for entry in self.TMUX_DIR.iterdir():
+                    try:
+                        entry.unlink()
+                    except Exception:
+                        pass
+                self.TMUX_DIR.rmdir()
+        except Exception:
+            pass
+
+        # Reset state
+        self._xterm_started = False
+        self._tmux_ready = False
+        self._last_tmux_cwd = None
+        self._pending_cd = None
+        self._client_tty = None
+
+    def _terminal_cleanup(self):
+        """
+        Stop timers, remove high-priority intercept tags, kill xterm/tmux, and
+        clean tmp resources. Idempotent and safe to call multiple times.
+        """
+        # Cancel timers first to stop rescheduling loops
+        for after_id_attr in ("_poll_after_id", "_size_after_id"):
+            aid = getattr(self, after_id_attr, None)
+            if aid:
+                try:
+                    self.after_cancel(aid)
+                except Exception:
+                    pass
+                setattr(self, after_id_attr, None)
+
+        # Remove intercept tag from all widgets so global shortcuts return to normal
+        if self._intercept_installed:
+            try:
+                for w in self._walk_widgets(self):
+                    try:
+                        tags = list(w.bindtags())
+                        if self._intercept_tag in tags:
+                            tags.remove(self._intercept_tag)
+                            w.bindtags(tuple(tags))
+                    except Exception:
+                        continue
+            except Exception:
+                pass
+            self._intercept_installed = False
+
+        # Terminate xterm process group (if still present)
+        p = getattr(self, "_xterm_proc", None)
+        if p:
+            try:
+                os.killpg(p.pid, signal.SIGTERM)
+            except Exception:
+                pass
+            try:
+                p.wait(timeout=1.0)
+            except Exception:
+                try:
+                    os.killpg(p.pid, signal.SIGKILL)
+                except Exception:
+                    pass
+            self._xterm_proc = None
+
+        # Kill tmux server on the private socket
+        tmux = shutil.which("tmux")
+        if tmux:
+            try:
+                subprocess.run([tmux, "-S", str(self.TMUX_SOCK), "kill-server"],
+                            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False)
+            except Exception:
+                pass
+
+        # Close X display (if open)
+        try:
+            if getattr(self, "_x_dpy", None) is not None:
+                self._x_dpy.close()
+        except Exception:
+            pass
+        self._x_dpy = None
+        self._x_child = None
+
+        # Remove the private tmux dir
+        try:
+            if hasattr(self, "TMUX_DIR") and self.TMUX_DIR.exists():
+                for entry in self.TMUX_DIR.iterdir():
+                    try:
+                        entry.unlink()
+                    except Exception:
+                        pass
+                self.TMUX_DIR.rmdir()
+        except Exception:
+            pass
+
+        # Reset state
+        self._xterm_started = False
+        self._tmux_ready = False
+        self._last_tmux_cwd = None
+        self._pending_cd = None
+        self._client_tty = None
+
+    def init_terminal_panel(self):
+        """
+        Initialize the embedded xterm+tmux terminal panel.
+
+        Improvements vs prior version:
+        • Stores after() timer IDs so they can be cancelled cleanly on shutdown.
+        • Binds <Destroy> to ensure timers/intercepts are removed even if cleanup hooks aren't called.
+        • Leaves all core behavior (private tmux socket, sizing, cwd sync, intercept) intact.
+        """
+        palette = getattr(self, "_palette", {})
+        self._TERM_BG = palette.get("BG_CANVAS", "#0b1220")
+        self._TERM_FG = palette.get("FG_TEXT",   "#e5e7eb")
+
+        # Unique tmux session + private socket dir/path per run
+        self.TMUX_SESSION = "zeropad"
+        run_id = f"{os.getpid()}-{uuid.uuid4().hex[:8]}"
+        self.TMUX_DIR  = Path.home() / ".cache" / "zeropad-tmux" / run_id
+        self.TMUX_SOCK = self.TMUX_DIR / "sock"
+
+        # Terminal pane
+        self.terminal = tk.Frame(self.vpaned, bg=self._TERM_BG)
+        self._term_container = tk.Frame(self.terminal, bg=self._TERM_BG, highlightthickness=0, bd=0)
+        self._term_container.pack(fill="both", expand=True)
+
+        # Processes/state
+        self._xterm_proc: subprocess.Popen | None = None
+        self._xterm_started = False
+        self._tmux_ready = False
+        self._last_tmux_cwd: Path | None = None
+        self._pending_cd: Path | None = None
+
+        # Size tracking
+        self._cell_w = 8.0
+        self._cell_h = 16.0
+        self._client_tty: str | None = None
+
+        # Xlib
+        self._x_dpy = None
+        self._x_child = None
+
+        # Key passthrough / intercept
+        self._terminal_active = False
+        self._intercept_tag = "ZP_TermIntercept"
+        self._intercept_installed = False
+
+        # Respawn guard
+        self._last_respawn = 0.0
+
+        # Timer handles (for safe cancellation)
+        self._poll_after_id = None
+        self._size_after_id = None
+
+        # Private tmux socket dir (0700)
+        try:
+            self.TMUX_DIR.mkdir(mode=0o700, parents=True, exist_ok=False)
+        except FileExistsError:
+            try:
+                os.chmod(self.TMUX_DIR, 0o700)
+            except Exception:
+                pass
+        except Exception as e:
+            self._show_error(f"Failed to create tmux dir: {e}")
+            return
+
+        # Spawn xterm/tmux when container is mapped
+        self.after(50, self._maybe_spawn_xterm)
+
+        # --- IMMEDIATE resize on every container <Configure> ---
+        self._term_container.bind("<Configure>", self._on_container_configure)
+
+        # Activation: clicking/focusing terminal enables intercept
+        self._term_container.bind("<Button-1>", self._on_terminal_click)
+        self._term_container.bind("<FocusIn>",  self._on_terminal_focus)
+        self._term_container.bind("<FocusOut>", self._on_terminal_blur)
+
+        # Bind handlers to our custom high-priority tag
+        # (Only Ctrl+D now; Ctrl+Z removed.)
+        self.bind_class(self._intercept_tag, "<Control-Key-d>", self._intercept_ctrl, add="+")
+
+        # Periodic size reconcile (safety net) + cleanup hook
+        self._size_after_id = self.after(self.SIZE_PERIODIC_MS, self._periodic_size_reconcile)
+        if not hasattr(self, "_cleanup_hooks"):
+            self._cleanup_hooks = []
+        self._cleanup_hooks.append(self._terminal_cleanup)
+
+        # Also ensure timers/intercepts are removed if widget hierarchy is destroyed
+        # (defensive: some hosts may forget to call _cleanup_hooks).
+        self.bind("<Destroy>", lambda _e: self._terminal_cleanup(), add="+")
