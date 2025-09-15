@@ -210,13 +210,6 @@ class TextPanel:
         self._nb.select(frame)
         return tid
 
-    def _add_tab_to_nb(self, frame: tk.Frame, title: str):
-        label = f"{title}  ✕"
-        try:
-            self._nb.insert(1, frame, text=label)  # after '+'
-        except tk.TclError:
-            self._nb.add(frame, text=label)
-
     def _on_tab_changed(self, _evt):
         # Auto-create a new tab if the '+' tab is selected
         if self._nb.select() == str(self._plus_tab):
@@ -691,18 +684,6 @@ class TextPanel:
     # =====================================================================
     # Modified/Dirty tracking — ensure both tab label *and* status get the star
     # =====================================================================
-    def _retitle_tab(self, tab_id: int, title: str, dirty: bool):
-        star = "*" if dirty else ""
-        label = f"{title}{star}  ✕"
-        tab = self._tabs.get(tab_id)
-        if not tab:
-            return
-        tab["title"] = title  # keep the base title without star
-        frame = tab["frame"]
-        try:
-            self._nb.tab(frame, text=label)
-        except Exception:
-            pass
 
     def _update_status_for_tab(self, tab: dict):
         txt: tk.Text = tab["text"]
@@ -860,59 +841,70 @@ class TextPanel:
         # Bind on press
         self.bind_class(self._NB_CLOSE_TAG, "<Button-1>", self._nb_click_intercept, add="+")
 
+    def _add_tab_to_nb(self, frame: tk.Frame, title: str):
+        label = f"{title}"  # no cross
+        try:
+            self._nb.insert(1, frame, text=label)  # after '+'
+        except tk.TclError:
+            self._nb.add(frame, text=label)
+
+    def _retitle_tab(self, tab_id: int, title: str, dirty: bool):
+        star = "*" if dirty else ""
+        label = f"{title}{star}"  # no cross
+        tab = self._tabs.get(tab_id)
+        if not tab:
+            return
+        tab["title"] = title
+        frame = tab["frame"]
+        try:
+            self._nb.tab(frame, text=label)
+        except Exception:
+            pass
+
+    # _nb_click_intercept
     def _nb_click_intercept(self, event):
-        """
-        High-priority tab-click hook that:
-        • creates a new tab when '+' is clicked
-        • closes a tab only if the click is inside the ✕ zone
-        • otherwise lets ttk handle normal selection
-        """
         nb = self._nb
         if not nb.winfo_ismapped():
             return
 
-        # Convert to notebook-relative coords (tab bboxes are in notebook coords)
         try:
             nx = event.x_root - nb.winfo_rootx()
             ny = event.y_root - nb.winfo_rooty()
         except Exception:
             return
 
-        # Which tab index was hit?
         try:
             idx = nb.index(f"@{nx},{ny}")
         except Exception:
             return  # not over a tab
 
-        # Get its bbox; bail if we can’t
         try:
             bx, by, bw, bh = nb.bbox(idx)
         except Exception:
             return
 
-        # Must be inside the tab's bbox
         if not (bx <= nx <= bx + bw and by <= ny <= by + bh):
             return
 
-        # '+' tab?
-        if idx == 0:
-            # Only trigger when clicking the label area (safe enough: inside bbox)
-            self._create_empty_tab_and_select()
-            return "break"  # consume so ttk doesn't also try to "select" '+'
+        # modifier keys
+        state = getattr(event, "state", 0)
+        shift_held   = bool(state & 0x0001)  # ShiftMask
+        ctrl_held    = bool(state & 0x0004)  # ControlMask
 
-        # Close zone: a DPI-aware strip on the far right of the tab label
-        close_w = max(14, min(28, int(round(bh * 0.8))))
-        if nx >= bx + bw - close_w:
+        # '+' tab behavior
+        if idx == 0:
             tabs = nb.tabs()
-            if 0 <= idx < len(tabs):
-                tab_widget = tabs[idx]
-                if tab_widget != str(self._plus_tab):
-                    # ensure the tab to close is the active one, so Ctrl+W path matches
+            if shift_held or ctrl_held:
+                # focus first real tab (index 1), do nothing else
+                if len(tabs) > 1:
                     try:
-                        nb.select(tab_widget)
+                        nb.select(tabs[1])
                     except Exception:
                         pass
-                    # Use the same public API bound to Ctrl+W
-                    self.file_close_active_tab()
-                    return "break"  # stop ttk default from re-selecting
-        # otherwise, not a close click → let ttk select normally
+                return "break"
+            else:
+                # normal '+' click → create new tab
+                self._create_empty_tab_and_select()
+                return "break"  # don't let ttk select '+'
+
+        # For normal tabs, just let ttk handle selection.
