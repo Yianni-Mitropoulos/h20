@@ -197,64 +197,6 @@ class TextPanel:
     # File open/save plumbing
     # =====================================================================
 
-    def open_with_zeropad(self, path: Path):
-        """Open file with encoding dialog; normalize EOLs to LF in editor."""
-        try:
-            enc_info = prompt_open_with_encoding(self, path)
-            if not enc_info:
-                return
-            enc, errors, add_bom = enc_info
-            data = read_text_bytes(path)
-            text = decode_bytes(data, enc, errors)
-        except Exception as e:
-            messagebox.showerror("Open failed", f"Could not open {path}:\n{e}")
-            return
-
-        text = self._normalize_eols(text)
-        frame = tk.Frame(self._nb, bg=DARK_PANEL)
-        tid = self._mk_tab_ui(frame, title=Path(path).name,
-                              path=Path(path), initial_text=text,
-                              encoding=enc, add_bom=add_bom)
-        self._add_tab_to_nb(frame, title=Path(path).name)
-        self._nb.select(frame)
-        return tid
-
-    def _save_tab_to_path(self, tab: Dict, target: Path):
-        txt: tk.Text = tab["text"]
-        s = txt.get("1.0", "end-1c")
-        try:
-            data = encode_text(s, tab["encoding"] or "utf-8", bool(tab["add_bom"]))
-            save_to_path(target, data)
-        except Exception as e:
-            messagebox.showerror("Save failed", f"Could not save to {target}:\n{e}")
-            return
-        tab["path"] = Path(target)
-        self._retitle_tab(id(tab["frame"]), tab["path"].name, dirty=False)
-        txt.edit_modified(False)
-        tab["dirty"] = False
-        self._update_status_for_tab(tab)
-
-    def _revert_from_disk(self, tab: Dict):
-        p = tab["path"]
-        if not p:
-            return
-        if not messagebox.askyesno("Revert", f"Discard changes and reload from disk?\n\n{p}"):
-            return
-        try:
-            data = read_text_bytes(p)
-            text = decode_bytes(data, tab["encoding"] or "utf-8", "strict")
-            text = self._normalize_eols(text)
-        except Exception as e:
-            messagebox.showerror("Revert failed", f"Could not reload {p}:\n{e}")
-            return
-        txt: tk.Text = tab["text"]
-        txt.delete("1.0", "end")
-        txt.insert("1.0", text)
-        txt.edit_modified(False)
-        tab["dirty"] = False
-        self._update_status_for_tab(tab)
-        self._schedule_draw_gutters(id(tab["frame"]), fast=True)
-
     # =====================================================================
     # Tabs & layout
     # =====================================================================
@@ -273,19 +215,6 @@ class TextPanel:
             self._nb.insert(1, frame, text=label)
         except tk.TclError:
             self._nb.add(frame, text=label)
-
-    def _retitle_tab(self, tab_id: int, title: str, dirty: bool):
-        star = "*" if dirty else ""
-        label = f"{title}{star}  ✕"
-        tab = self._tabs.get(tab_id)
-        if not tab:
-            return
-        frame = tab["frame"]
-        try:
-            self._nb.tab(frame, text=label)
-        except Exception:
-            pass
-        tab["title"] = title
 
     def _on_tab_changed(self, _evt):
         # Auto-create a new tab if the '+' tab is selected
@@ -438,30 +367,6 @@ class TextPanel:
         self._update_status_for_tab(tab)
         self._schedule_draw_gutters(tid, fast=True)
 
-    def _update_status_for_tab(self, tab: Dict):
-        txt: tk.Text = tab["text"]
-        try:
-            line_s, col_s = txt.index("insert").split(".")
-            line, col = int(line_s), int(col_s) + 1  # 1-based col
-        except Exception:
-            line, col = 1, 1
-        total = int(txt.index("end-1c").split(".")[0])
-        enc = tab["encoding"] or "utf-8"
-        dirty_star = "*" if (tab["dirty"] or txt.edit_modified()) else ""
-        path_str = str(tab["path"]) if tab["path"] else "(untitled)"
-        self._status_path_var.set(f"{path_str}{dirty_star}")
-        self._status_info.config(text=f"Ln {line}, Col {col} | {total} lines | {enc}{' +BOM' if tab['add_bom'] else ''}")
-
-    def _on_modified(self, tid: int):
-        tab = self._tabs.get(tid)
-        if not tab:
-            return
-        tab["dirty"] = True
-        # Reset tk modified flag so future edits still trigger
-        tab["text"].edit_modified(False)
-        self._update_status_for_tab(tab)
-        self._schedule_draw_gutters(tid, fast=False)
-
     def _on_text_yscroll(self, tid: int, first: str, last: str):
         tab = self._tabs.get(tid)
         if not tab:
@@ -567,25 +472,6 @@ class TextPanel:
     # Cross-panel integration
     # =====================================================================
 
-    def on_path_renamed(self, old_path: Path, new_path: Path):
-        """Called by FilePanel after a successful rename. Updates any open tab."""
-        try:
-            old_r = Path(old_path).resolve()
-            new_r = Path(new_path).resolve()
-        except Exception:
-            return
-        for tid, tab in list(self._tabs.items()):
-            p = tab.get("path")
-            if not p:
-                continue
-            try:
-                if Path(p).resolve() == old_r:
-                    tab["path"] = new_r
-                    self._retitle_tab(tid, new_r.name, dirty=tab.get("dirty", False))
-                    self._update_status_for_tab(tab)
-            except Exception:
-                continue
-
     # =====================================================================
     # Utils
     # =====================================================================
@@ -604,3 +490,523 @@ class TextPanel:
             if str(tab["frame"]) == cur:
                 return tab
         return None
+
+    # =====================================================================
+    # File menu: Open Selected / Save Over Selected
+    # =====================================================================
+
+    def _files_panel_selected_path(self) -> Optional[Path]:
+        """
+        Returns the currently selected Path from the File panel, if any.
+        We rely on FilePanel setting `self._selected_path` as the user moves around.
+        """
+        try:
+            p = getattr(self, "_selected_path", None)
+            return Path(p) if p else None
+        except Exception:
+            return None
+
+    def file_open_selected(self):
+        """
+        Same behavior as double-clicking the selected file in the File panel:
+          - For files: prompt 'System default vs Open in Zeropad'.
+          - If 'Open in Zeropad': guess encoding, allow override, then open in a new tab.
+        """
+        p = self._files_panel_selected_path()
+        if not p:
+            from tkinter import messagebox
+            messagebox.showinfo("Open Selected", "No item selected in the File panel.")
+            return
+        if p.is_dir():
+            from tkinter import messagebox
+            messagebox.showinfo("Open Selected", "The selected item is a folder. Pick a file.")
+            return
+
+        # Reuse the FilePanel's chooser if available (keeps behavior identical to double-click)
+        if hasattr(self, "_prompt_open_file") and callable(getattr(self, "_prompt_open_file")):
+            self._prompt_open_file(p)
+            return
+
+        # Fallback: go straight to Zeropad open flow (guess encoding -> allow override)
+        try:
+            from editor_io import prompt_open_with_encoding, read_text_bytes, decode_bytes
+        except Exception:
+            from tkinter import messagebox
+            messagebox.showerror("Unavailable", "Open helper functions are missing.")
+            return
+
+        enc_info = prompt_open_with_encoding(self, p)
+        if not enc_info:
+            return
+        enc, errors, add_bom = enc_info
+        try:
+            data = read_text_bytes(p)
+            text = decode_bytes(data, enc, errors)
+        except Exception as e:
+            from tkinter import messagebox
+            messagebox.showerror("Open failed", f"Could not open {p}:\n{e}")
+            return
+
+        text = self._normalize_eols(text)
+        frame = tk.Frame(self._nb, bg="#111827")
+        tid = self._mk_tab_ui(frame, title=p.name, path=p, initial_text=text, encoding=enc, add_bom=add_bom)
+        self._add_tab_to_nb(frame, title=p.name)
+        self._nb.select(frame)
+        return tid
+
+    # =====================================================================
+    # Helper: force-clear dirty indicators after programmatic loads/saves
+    # =====================================================================
+    def _force_clean_state(self, tid: int):
+        tab = self._tabs.get(tid)
+        if not tab:
+            return
+        txt: tk.Text = tab["text"]
+        try:
+            # Clear Tk's internal modified flag & undo stack; keep our own dirty = False.
+            txt.edit_reset()
+            txt.edit_modified(False)
+        except Exception:
+            pass
+        tab["dirty"] = False
+        # Re-title without a star
+        self._retitle_tab(tid, tab.get("title") or (tab.get("path").name if tab.get("path") else "Untitled"), dirty=False)
+        self._update_status_for_tab(tab)
+
+    def open_with_zeropad(self, path: Path, override_encoding: str | None = None):
+        """Open file; normalize EOLs to LF. If override_encoding is provided, use it."""
+        from tkinter import messagebox
+        from editor_io import read_text_bytes, decode_bytes, suggest_open_encoding  # new helper
+        try:
+            enc = override_encoding or suggest_open_encoding(path)
+            data = read_text_bytes(path)
+            text = decode_bytes(data, enc, "strict")
+        except Exception as e:
+            messagebox.showerror("Open failed", f"Could not open {path}:\n{e}")
+            return
+
+        text = self._normalize_eols(text)
+        frame = tk.Frame(self._nb, bg="#111827")
+        tid = self._mk_tab_ui(frame, title=Path(path).name,
+                              path=Path(path), initial_text=text,
+                              encoding=enc, add_bom=(enc.lower() == "utf-8-with-bom"))
+        self._add_tab_to_nb(frame, title=Path(path).name)
+        self._nb.select(frame)
+        return tid
+
+    # =========================
+    # Modified-flag squelching
+    # =========================
+    def _mod_squelch_begin(self, tab: Dict):
+        """Increment a counter that tells _on_modified to ignore spurious events."""
+        tab["squelch_mod"] = int(tab.get("squelch_mod", 0)) + 1
+
+    def _mod_squelch_end(self, tab: Dict):
+        """Decrement squelch counter (never below zero)."""
+        tab["squelch_mod"] = max(0, int(tab.get("squelch_mod", 0)) - 1)
+
+    # ==========================================
+    # Build a tab's internals (full replacement)
+    # ==========================================
+    def _mk_tab_ui(self, frame: tk.Frame, title: str,
+                    *, path: Optional[Path] = None, initial_text: str = "",
+                    encoding: str = "utf-8", add_bom: bool = False) -> int:
+        mono = tkfont.Font(family="Monospace", size=11)
+        ln_bg = "#101828"
+        face_bg = "#0d1628"
+        txt_bg = "#0b1220"  # DARK_BG
+
+        # Container
+        host = tk.Frame(frame, bg="#111827", highlightthickness=0, bd=0)  # DARK_PANEL
+        host.pack(fill="both", expand=True)
+        host.grid_rowconfigure(0, weight=1)
+        for c in (0, 1, 2):
+            host.grid_columnconfigure(c, weight=0)
+        host.grid_columnconfigure(3, weight=1)
+
+        # Line numbers gutter
+        ln = tk.Canvas(host, width=48, bg=ln_bg, highlightthickness=0, bd=0, takefocus=0)
+        ln.grid(row=0, column=0, sticky="ns")
+        ln.bind("<Button-1>", lambda e: "break")  # unselectable
+
+        # Safety faces gutter
+        face = tk.Canvas(host, width=18, bg=face_bg, highlightthickness=0, bd=0, takefocus=0)
+        face.grid(row=0, column=1, sticky="ns")
+        face.bind("<Button-1>", lambda e: "break")  # clicks handled below on unhappy faces
+
+        # Soft boundary (no visible line)
+        sep = tk.Frame(host, width=1, bg="#111827", highlightthickness=0, bd=0)  # DARK_PANEL
+        sep.grid(row=0, column=2, sticky="ns")
+
+        # Text + Scrollbar
+        txt = tk.Text(host, wrap="none", undo=True,
+                      background=txt_bg, foreground="#e5e7eb", insertbackground="#e5e7eb",
+                      relief="flat", bd=0, padx=8, pady=6, font=mono, highlightthickness=0)
+        txt.grid(row=0, column=3, sticky="nsew")
+        scroll = ttk.Scrollbar(host, orient="vertical", command=txt.yview)
+        scroll.grid(row=0, column=4, sticky="ns")
+        txt.configure(yscrollcommand=lambda first, last, tid=None: self._on_text_yscroll(id(frame), first, last))
+
+        # Model
+        tab = {
+            "frame": frame,
+            "host": host,
+            "ln": ln,
+            "face": face,
+            "text": txt,
+            "scroll": scroll,
+            "path": path,
+            "title": title,
+            "encoding": encoding,
+            "add_bom": add_bom,
+            "dirty": False,
+            "last_paint": 0.0,
+            "repaint_due": None,
+            "squelch_mod": 0,   # <— NEW: guard against spurious <<Modified>>
+        }
+        tid = id(frame)
+        self._tabs[tid] = tab
+
+        # Insert text (normalize EOLs) under a squelch window so <<Modified>> won't mark dirty
+        self._mod_squelch_begin(tab)
+        try:
+            if initial_text:
+                txt.insert("1.0", self._normalize_eols(initial_text))
+            txt.edit_reset()
+            txt.edit_modified(False)
+        finally:
+            # Delay end one idle to ride out any late <<Modified>>
+            def _end():
+                self._mod_squelch_end(tab)
+                try:
+                    txt.edit_modified(False)
+                except Exception:
+                    pass
+            self.after_idle(_end)
+
+        # Bindings
+        txt.bind("<<Modified>>", lambda _e, t=tid: self._on_modified(t), add="+")
+        txt.bind("<KeyRelease>", lambda _e, t=tid: self._on_text_activity(t), add="+")
+        txt.bind("<ButtonRelease-1>", lambda _e, t=tid: self._on_text_activity(t), add="+")
+        txt.bind("<Configure>", lambda _e, t=tid: self._schedule_draw_gutters(t), add="+")
+        txt.bind("<MouseWheel>", lambda _e, t=tid: self._schedule_draw_gutters(t), add="+")
+        txt.bind("<Button-4>", lambda _e, t=tid: self._schedule_draw_gutters(t), add="+")
+        txt.bind("<Button-5>", lambda _e, t=tid: self._schedule_draw_gutters(t), add="+")
+        txt.bind("<Control-a>", lambda e, t=tid: (txt.tag_add("sel", "1.0", "end-1c"), "break"))
+
+        # Click unhappy faces to sanitize that line
+        face.bind("<Button-1>", lambda e, t=tid: self._on_face_click(t, e))
+
+        # Title & first paint
+        self._retitle_tab(tid, title, dirty=False)
+        self._update_status_for_tab(tab)
+        self._schedule_draw_gutters(tid, fast=True)
+        return tid
+
+    # ==================================
+    # <<Modified>> handler (replacement)
+    # ==================================
+    # ==================================================
+    # Rename hook from FilePanel (replacement, squelched)
+    # ==================================================
+    def on_path_renamed(self, old_path: Path, new_path: Path):
+        """Update any open tab's path/title WITHOUT marking it dirty."""
+        try:
+            old_r = Path(old_path).resolve()
+            new_r = Path(new_path).resolve()
+        except Exception:
+            return
+
+        for tid, tab in list(self._tabs.items()):
+            p = tab.get("path")
+            if not p:
+                continue
+            try:
+                if Path(p).resolve() != old_r:
+                    continue
+            except Exception:
+                continue
+
+            was_dirty = bool(tab.get("dirty"))
+            txt: tk.Text = tab["text"]
+
+            # Squelch any spurious <<Modified>> around title/path churn.
+            self._mod_squelch_begin(tab)
+            try:
+                tab["path"] = new_r
+                self._retitle_tab(tid, new_r.name, dirty=was_dirty)
+                self._update_status_for_tab(tab)
+                try:
+                    txt.edit_modified(False)
+                except Exception:
+                    pass
+            finally:
+                # End after idle – some Tk builds deliver <<Modified>> late.
+                self.after_idle(lambda t=tab: (self._mod_squelch_end(t), t["text"].edit_modified(False)))
+
+    # ====================================================
+    # Revert & Save (replacement — guarded with squelch)
+    # ====================================================
+    def _revert_from_disk(self, tab: Dict):
+        p = tab["path"]
+        if not p:
+            return
+        if not messagebox.askyesno("Revert", f"Discard changes and reload from disk?\n\n{p}"):
+            return
+        try:
+            data = read_text_bytes(p)
+            text = decode_bytes(data, tab["encoding"] or "utf-8", "strict")
+            text = self._normalize_eols(text)
+        except Exception as e:
+            messagebox.showerror("Revert failed", f"Could not reload {p}:\n{e}")
+            return
+
+        txt: tk.Text = tab["text"]
+        # Replace buffer
+        txt.delete("1.0", "end")
+        txt.insert("1.0", text)
+
+        # Clear dirty state (both our flag and Tk’s internal flag)
+        tab["dirty"] = False
+        txt.edit_modified(False)
+
+        # Retitle the tab without asterisk and refresh status
+        title = (tab["path"].name if tab.get("path") else tab.get("title") or "Untitled")
+        self._retitle_tab(id(tab["frame"]), title, dirty=False)
+        self._update_status_for_tab(tab)
+
+        # Redraw gutters promptly
+        self._schedule_draw_gutters(id(tab["frame"]), fast=True)
+
+
+    def _save_tab_to_path(self, tab: Dict, target: Path):
+        """Save without flipping dirty due to spurious <<Modified>> around relabeling."""
+        txt: tk.Text = tab["text"]
+        s = txt.get("1.0", "end-1c")
+        try:
+            data = encode_text(s, tab.get("encoding") or "utf-8", bool(tab.get("add_bom")))
+            save_to_path(target, data)
+        except Exception as e:
+            messagebox.showerror("Save failed", f"Could not save to {target}:\n{e}")
+            return
+
+        # Update title/path under squelch
+        self._mod_squelch_begin(tab)
+        try:
+            tab["path"] = Path(target)
+            self._retitle_tab(id(tab["frame"]), tab["path"].name, dirty=False)
+            tab["dirty"] = False
+            try:
+                txt.edit_modified(False)
+                txt.edit_reset()
+            except Exception:
+                pass
+        finally:
+            self.after_idle(lambda t=tab: (self._mod_squelch_end(t), t["text"].edit_modified(False)))
+
+        self._update_status_for_tab(tab)
+
+    # =====================================================================
+    # Save Over Selected (File menu) — overwrite selected file *content only*
+    # =====================================================================
+    def save_over_selected(self):
+        """
+        Overwrite the *content* of the currently selected file in the File Manager
+        using the active tab's text. Encoding comes from the active tab by default,
+        but the user can pick a different one inline (handled in menus via editor_io).
+        """
+        from pathlib import Path
+        from tkinter import messagebox
+        from editor_io import encode_text_inline  # (text, default_encoding) -> (data, final_encoding)
+
+        tab = self._current_tab()
+        if not tab:
+            messagebox.showinfo("Save Over Selected", "No text tab is active.")
+            return
+
+        target = getattr(self, "_selected_path", None)
+        if not isinstance(target, Path) or (not target.exists()) or (not target.is_file()):
+            messagebox.showinfo("Save Over Selected", "Please select a file in the File Manager.")
+            return
+
+        # prepare content & encoding
+        default_enc = tab.get("encoding") or "utf-8"
+        content = tab["text"].get("1.0", "end-1c")
+        data, final_enc = encode_text_inline(self, content, default_enc)  # one dialog; wide enough
+
+        # Write-in-place (preserve metadata other than size/mtime)
+        with open(target, "r+b") as f:
+            f.truncate(0)
+            f.write(data)
+            f.flush()
+
+        # The tab should now point at the overwritten file (and be clean)
+        tab["path"] = target
+        tab["encoding"] = final_enc
+        tab["add_bom"] = (final_enc.lower() == "utf-8-with-bom")
+        tab["dirty"] = False
+
+        try:
+            tab["text"].edit_modified(False)
+            tab["text"].edit_reset()
+        except Exception:
+            pass
+
+        self._retitle_tab(id(tab["frame"]), target.name, dirty=False)
+        self._update_status_for_tab(tab)
+        messagebox.showinfo("Save Over Selected", f"Saved over:\n{target}")
+
+    # =====================================================================
+    # Modified/Dirty tracking — ensure both tab label *and* status get the star
+    # =====================================================================
+    def _retitle_tab(self, tab_id: int, title: str, dirty: bool):
+        star = "*" if dirty else ""
+        label = f"{title}{star}  ✕"
+        tab = self._tabs.get(tab_id)
+        if not tab:
+            return
+        tab["title"] = title  # keep the base title without star
+        frame = tab["frame"]
+        try:
+            self._nb.tab(frame, text=label)
+        except Exception:
+            pass
+
+    def _update_status_for_tab(self, tab: dict):
+        txt: tk.Text = tab["text"]
+        try:
+            line_s, col_s = txt.index("insert").split(".")
+            line, col = int(line_s), int(col_s) + 1
+        except Exception:
+            line, col = 1, 1
+        total = int(txt.index("end-1c").split(".")[0])
+        enc = tab.get("encoding") or "utf-8"
+        dirty_star = "*" if tab.get("dirty") else ""
+        path_str = str(tab["path"]) if tab.get("path") else "(untitled)"
+        self._status_path_var.set(f"{path_str}{dirty_star}")
+        self._status_info.config(text=f"Ln {line}, Col {col} | {total} lines | {enc}")
+
+    def _mk_tab_ui(self, frame: tk.Frame, title: str,
+                    *, path: Optional[Path] = None, initial_text: str = "",
+                    encoding: str = "utf-8", add_bom: bool = False) -> int:
+        mono = tkfont.Font(family="Monospace", size=11)
+        ln_bg = "#101828"
+        face_bg = "#0d1628"
+        txt_bg = "#0b1220"  # DARK_BG
+
+        # Container
+        host = tk.Frame(frame, bg="#111827", highlightthickness=0, bd=0)
+        host.pack(fill="both", expand=True)
+        host.grid_rowconfigure(0, weight=1)
+        for c in (0, 1, 2):
+            host.grid_columnconfigure(c, weight=0)
+        host.grid_columnconfigure(3, weight=1)
+
+        # Line numbers gutter (unselectable)
+        ln = tk.Canvas(host, width=48, bg=ln_bg, highlightthickness=0, bd=0, takefocus=0)
+        ln.grid(row=0, column=0, sticky="ns")
+        ln.bind("<Button-1>", lambda e: "break")
+
+        # Safety faces gutter (unselectable)
+        face = tk.Canvas(host, width=18, bg=face_bg, highlightthickness=0, bd=0, takefocus=0)
+        face.grid(row=0, column=1, sticky="ns")
+        face.bind("<Button-1>", lambda e: "break")
+
+        # Soft spacer (no visible line)
+        sep = tk.Frame(host, width=1, bg="#111827", highlightthickness=0, bd=0)
+        sep.grid(row=0, column=2, sticky="ns")
+
+        # Text + Scrollbar
+        txt = tk.Text(host, wrap="none", undo=True,
+                      background=txt_bg, foreground="#e5e7eb", insertbackground="#e5e7eb",
+                      relief="flat", bd=0, padx=8, pady=6, font=mono, highlightthickness=0)
+        txt.grid(row=0, column=3, sticky="nsew")
+        scroll = ttk.Scrollbar(host, orient="vertical", command=txt.yview)
+        scroll.grid(row=0, column=4, sticky="ns")
+        txt.configure(yscrollcommand=lambda first, last, tid=None: self._on_text_yscroll(id(frame), first, last))
+
+        # Model
+        tab = {
+            "frame": frame,
+            "host": host,
+            "ln": ln,
+            "face": face,
+            "text": txt,
+            "scroll": scroll,
+            "path": path,
+            "title": title,
+            "encoding": encoding,
+            "add_bom": add_bom,
+            "dirty": False,
+            "last_paint": 0.0,
+            "repaint_due": None,
+            # Guard to ignore spurious <<Modified>> during initial setup
+            "ignore_modified": True,
+        }
+        tid = id(frame)
+        self._tabs[tid] = tab
+
+        # Insert text BEFORE binding, normalize EOLs, then make sure widget is clean
+        if initial_text:
+            txt.insert("1.0", self._normalize_eols(initial_text))
+        try:
+            txt.edit_reset()
+            txt.edit_modified(False)
+        except Exception:
+            pass
+
+        # Bind after content present
+        txt.bind("<<Modified>>", lambda _e, t=tid: self._on_modified(t), add="+")
+        txt.bind("<KeyRelease>", lambda _e, t=tid: self._on_text_activity(t), add="+")
+        txt.bind("<ButtonRelease-1>", lambda _e, t=tid: self._on_text_activity(t), add="+")
+        txt.bind("<Configure>", lambda _e, t=tid: self._schedule_draw_gutters(t), add="+")
+        txt.bind("<MouseWheel>", lambda _e, t=tid: self._schedule_draw_gutters(t), add="+")
+        txt.bind("<Button-4>", lambda _e, t=tid: self._schedule_draw_gutters(t), add="+")
+        txt.bind("<Button-5>", lambda _e, t=tid: self._schedule_draw_gutters(t), add="+")
+        txt.bind("<Control-a>", lambda e, t=tid: (txt.tag_add("sel", "1.0", "end-1c"), "break"))
+
+        # Click unhappy faces to sanitize that line
+        face.bind("<Button-1>", lambda e, t=tid: self._on_face_click(t, e))
+
+        # Title & first paint
+        self._retitle_tab(tid, title, dirty=False)
+        self._update_status_for_tab(tab)
+        self._schedule_draw_gutters(tid, fast=True)
+
+        # Clear the ignore guard on next idle to avoid “dirty on open”
+        def _clear_guard():
+            t = self._tabs.get(tid)
+            if not t:
+                return
+            t["ignore_modified"] = False
+            try:
+                t["text"].edit_modified(False)
+            except Exception:
+                pass
+        self.after_idle(_clear_guard)
+
+        return tid
+
+    def _on_modified(self, tid: int):
+        tab = self._tabs.get(tid)
+        if not tab:
+            return
+        # Ignore spurious <<Modified>> during initial setup
+        if tab.get("ignore_modified"):
+            try:
+                tab["text"].edit_modified(False)
+            except Exception:
+                pass
+            return
+
+        tab["dirty"] = True
+        # keep tk's modified flag bouncing so future edits still trigger
+        try:
+            tab["text"].edit_modified(False)
+        except Exception:
+            pass
+        # star in tab title + status
+        base_title = tab.get("title") or (tab.get("path").name if tab.get("path") else "Untitled")
+        self._retitle_tab(tid, base_title, dirty=True)
+        self._update_status_for_tab(tab)
+        self._schedule_draw_gutters(tid, fast=False)

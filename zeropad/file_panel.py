@@ -837,9 +837,26 @@ class FilePanel:
         self._update_meta_safety_from_entry()
         self.meta_filename.focus_set()
 
+    def get_selected_path(self) -> Optional[Path]:
+        """Return the currently selected filesystem Path (or None)."""
+        # Prefer our tracked selection
+        if getattr(self, "_selected_path", None):
+            return self._selected_path
+        # Fallback: read from the tree selection if present
+        try:
+            sels = self.tree.selection()
+            if not sels:
+                return None
+            meta = self._node.get(sels[0], {})
+            p = meta.get("path")
+            return Path(p) if p else None
+        except Exception:
+            return None
+
+
     def _on_tree_double_click(self, event):
         """React only to double-clicks on actual rows.
-        - Files (role='cwd-file')  → open chooser
+        - Files (role='cwd-file')  → select it, then delegate to File→Open Selected.
         - Directories (breadcrumbs/cwd-dir) → cd into
         - 'Create New …' rows → enter create mode
         - Headings/separators/empty space → ignore
@@ -859,7 +876,21 @@ class FilePanel:
 
         # Only show the open dialog for files that live in the cwd list
         if kind == "file" and role == "cwd-file" and path:
-            self._prompt_open_file(path)
+            # Make sure the UI selection matches the clicked row before delegating
+            try:
+                self.tree.selection_set(row_id)
+                self.tree.focus(row_id)
+            except Exception:
+                pass
+            # Track selection for menus._menu_open_selected()
+            self._selected_path = Path(path)
+            self._create_mode = None
+            # Delegate to the same logic used by File → Open Selected
+            if hasattr(self, "_menu_open_selected") and callable(getattr(self, "_menu_open_selected")):
+                self._menu_open_selected()
+            else:
+                # Fallback: open chooser directly (shouldn't normally happen)
+                self._prompt_open_file(Path(path))
             return
 
         # Navigate on directories (breadcrumbs or cwd)
@@ -1069,7 +1100,8 @@ class FilePanel:
                     target.mkdir(parents=True, exist_ok=False)
                 else:
                     target.parent.mkdir(parents=True, exist_ok=True)
-                    with open(target, "x"): pass
+                    with open(target, "x"):
+                        pass
                 st = target.stat()
                 os.utime(target, (st.st_atime, mod_ts))
                 os.chmod(target, mode_val)
@@ -1116,17 +1148,17 @@ class FilePanel:
             messagebox.showerror("Exists", f"Target already exists:\n{target}"); return
 
         try:
+            old_path = src
             if do_rename:
-                old_path = src
                 src.rename(target)
-                # notify text editor so open tabs keep working
+                src = target
+                self._selected_path = target
+                # Notify TextPanel so any open tab updates its path/title WITHOUT changing dirty
                 if hasattr(self, "on_path_renamed") and callable(getattr(self, "on_path_renamed")):
                     try:
                         self.on_path_renamed(old_path, target)
                     except Exception:
                         pass
-                src = target
-                self._selected_path = target
                 if was_cwd and target.is_dir():
                     self.set_cwd(target)
 

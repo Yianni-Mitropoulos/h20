@@ -1,477 +1,481 @@
 # editor_io.py
-"""
-Zeropad: File I/O helpers (OPEN / SAVE / SAVE AS) with encoding & BOM handling.
-
-Goals
-=====
-- Decode bytes using a sensible detector:
-  * Honor BOMs first (UTF-8/16/32 LE/BE)
-  * Else try UTF-8 strict
-  * Else try common single-byte fallbacks (Windows-1252, ISO-8859-1)
-- Let the user confirm/override encoding BEFORE load via a modal dialog.
-- Normalize EOLs in the editor buffer: CRLF→LF, lone CR→LF.
-- Remember encoding + "write BOM" for saves (Save, Save As).
-- Keep UI here; leave tab creation / dirty tracking to TextPanel.
-
-Public API (call from main/TextPanel/FilePanel)
-===============================================
-- choose_encoding_and_read(parent, path: Path) -> (text:str, meta:dict)
-    meta keys:
-      encoding: str                 # canonical Python codec name (e.g. 'utf-8', 'utf-16-le')
-      write_bom: bool               # whether to emit a BOM on save
-      had_bom: bool                 # whether the source had a BOM
-      eol_style: str                # 'lf'|'crlf'|'cr' (source heuristic)
-      byte_length: int              # size on disk
-- write_text_to_path(path: Path, text: str, *, encoding: str, write_bom: bool) -> None
-    (Replaces file content. Always writes '\n' newlines.)
-- save_as_dialog(parent, initial_path: Path, text: str, *, encoding: str, write_bom: bool)
-    -> Optional[tuple[Path, str, bool]]
-    (Shows a Save As dialog; writes the file; returns (new_path, encoding, write_bom) or None.)
-
-Wiring sketch (minimal)
-=======================
-- File panel: on “Open in Zeropad”
-    text, meta = choose_encoding_and_read(self, path)
-    self.text_open_document(path, text, meta)  # implement in TextPanel
-
-- Text panel: on “Save”
-    write_text_to_path(tab.path, text_widget.get("1.0","end-1c"),
-                       encoding=tab.meta['encoding'],
-                       write_bom=tab.meta['write_bom'])
-
-- Text panel: on “Save As”
-    rv = save_as_dialog(self, Path(tab.path), text_widget.get(...),
-                        encoding=tab.meta['encoding'],
-                        write_bom=tab.meta['write_bom'])
-    if rv: (new_path, new_enc, new_bom) = rv; update tab metadata/UI.
-"""
-
 from __future__ import annotations
-
-import binascii
-from dataclasses import dataclass
 from pathlib import Path
-from typing import Iterable, Optional, Tuple
+import codecs
+import tkinter as tk
+from tkinter import filedialog, messagebox, simpledialog
+
+# -------------------------
+# Core file I/O primitives
+# -------------------------
+
+def read_text_bytes(path: Path | str) -> bytes:
+    """Read raw bytes (no decoding)."""
+    return Path(path).read_bytes()
+
+def save_to_path(path: Path | str, data: bytes) -> None:
+    """Save bytes (create or truncate). This may change metadata like mtime."""
+    Path(path).write_bytes(data)
+
+def overwrite_file_inplace(path: Path | str, data: bytes) -> None:
+    """
+    Overwrite an existing file's contents in-place (truncate/write) without recreating it.
+    - Keeps ownership, mode bits, xattrs, etc. (mtime will update as expected).
+    """
+    with open(path, "wb") as f:
+        f.write(data)
+
+# -------------------------
+# Encoding helpers
+# -------------------------
+
+def _canonical_encoding(name: str) -> str:
+    try:
+        return codecs.lookup(name).name
+    except Exception:
+        return name.strip()
+
+def decode_bytes(b: bytes, encoding: str, errors: str = "strict") -> str:
+    return b.decode(encoding, errors=errors)
+
+# -------------------------
+# Lightweight UI helpers
+# -------------------------
+
+def maybe_choose_encoding(owner,
+                          suggest_encoding: str,
+                          suggest_bom: bool,
+                          title: str,
+                          body: str) -> tuple[str, str, bool] | None:
+    """
+    Simple 2-step chooser:
+      1) Ask to keep the current encoding/BOM.
+      2) If not, prompt for another encoding string and BOM toggle.
+    Returns (encoding, errors, add_bom) or None if cancelled.
+    """
+    enc_label = suggest_encoding or "utf-8"
+    bom_label = " +BOM" if suggest_bom else ""
+    use_suggest = messagebox.askyesno(title, f"{body}\n\nUse {enc_label}{bom_label}?", parent=owner, default="yes")
+    if use_suggest:
+        return (enc_label, "strict", suggest_bom)
+
+    # Ask for another encoding
+    new_enc = simpledialog.askstring(title, "Enter encoding (e.g. utf-8, latin-1, cp1252):",
+                                     initialvalue=enc_label, parent=owner)
+    if not new_enc:
+        return None
+
+    new_bom = messagebox.askyesno(title, "Include UTF-8 BOM?", parent=owner, default="no")
+    return (_canonical_encoding(new_enc), "strict", new_bom)
+
+# -------------------------
+# Open with encoding
+# -------------------------
+
+# -------------------------
+# Save-As with encoding (existing)
+# -------------------------
+
+def prompt_save_as_with_encoding(owner,
+                                 suggest_path: Path | None,
+                                 suggest_enc: str,
+                                 suggest_bom: bool) -> tuple[Path, str, str, bool] | None:
+    """
+    Standard Save As: choose a filename, then confirm/adjust encoding.
+    Returns (path, encoding, errors, add_bom) or None if cancelled.
+    """
+    fname = filedialog.asksaveasfilename(parent=owner,
+                                         initialfile=(suggest_path.name if suggest_path else "untitled.txt"))
+    if not fname:
+        return None
+
+    enc_choice = maybe_choose_encoding(
+        owner, suggest_enc or "utf-8", suggest_bom,
+        "Save As", f"Save to:\n{fname}\n\nSelect encoding."
+    )
+    if not enc_choice:
+        return None
+    enc, errors, add_bom = enc_choice
+    return (Path(fname), enc, errors, add_bom)
 
 import tkinter as tk
-from tkinter import ttk, filedialog, messagebox
+from tkinter import ttk
 
+import tkinter as tk
+from tkinter import ttk
 
-# ------------------------------ BOM tables ------------------------------
+# --- Encoding helpers with BOM folded into the "encoding name" ----------------
+# Accept canonical names like "utf-8", plus BOM-flavored names like "utf-8-with-bom".
+# Callers no longer pass a separate add_bom flag. We treat BOM as part of the encoding.
 
-@dataclass(frozen=True)
-class _BOMInfo:
-    name: str
-    bytes_: bytes
-    py_codec: str   # canonical Python codec to decode remaining bytes (after BOM)
-
-# Order matters: longest first
-_BOMS: tuple[_BOMInfo, ...] = (
-    _BOMInfo("UTF-32-BE", b"\x00\x00\xFE\xFF", "utf-32-be"),
-    _BOMInfo("UTF-32-LE", b"\xFF\xFE\x00\x00", "utf-32-le"),
-    _BOMInfo("UTF-16-BE", b"\xFE\xFF",          "utf-16-be"),
-    _BOMInfo("UTF-16-LE", b"\xFF\xFE",          "utf-16-le"),
-    _BOMInfo("UTF-8-BOM", b"\xEF\xBB\xBF",      "utf-8"),
-)
-
-_UTF_WRITE_BOMS = {
-    "utf-8":     b"\xEF\xBB\xBF",
-    "utf-16-be": b"\xFE\xFF",
-    "utf-16-le": b"\xFF\xFE",
-    "utf-32-be": b"\x00\x00\xFE\xFF",
-    "utf-32-le": b"\xFF\xFE\x00\x00",
-}
-
-# sensible fallbacks (only if no BOM and UTF-8 fails)
-_FALLBACK_SINGLE_BYTE = ("windows-1252", "iso-8859-1")
-
-
-# ------------------------------ helpers ------------------------------
-
-def _detect_eol_style(raw: bytes) -> str:
-    """Return 'crlf'|'lf'|'cr' based on first newline style seen; default 'lf'."""
-    if b"\r\n" in raw:
-        return "crlf"
-    if b"\r" in raw and b"\n" not in raw:
-        return "cr"
-    return "lf"
-
-
-def _strip_bom(raw: bytes) -> Tuple[bytes, Optional[_BOMInfo]]:
-    """Remove leading BOM if present; return (remaining_bytes, bominfo_or_None)."""
-    for info in _BOMS:
-        if raw.startswith(info.bytes_):
-            return raw[len(info.bytes_):], info
-    return raw, None
-
-
-def _normalize_eols(text: str) -> str:
-    """CRLF→LF, lone CR→LF."""
-    # order matters: collapse CRLF first, then any stray CR
-    text = text.replace("\r\n", "\n")
-    text = text.replace("\r", "\n")
-    return text
-
-
-def _try_decode(raw: bytes, encodings: Iterable[str]) -> Optional[Tuple[str, str]]:
-    """Try candidate encodings; return (encoding_used, text) or None."""
-    for enc in encodings:
-        try:
-            return enc, raw.decode(enc, errors="strict")
-        except Exception:
-            continue
-    return None
-
-
-def _canonical_encoding_name(enc: str) -> str:
-    """Normalize a few alias spellings."""
-    enc = enc.lower().replace("_", "-")
-    if enc in {"utf8", "utf-8-sig"}:
-        return "utf-8"
-    if enc in {"ucs-2-le", "utf16le"}:
-        return "utf-16-le"
-    if enc in {"ucs-2-be", "utf16be"}:
-        return "utf-16-be"
-    if enc in {"utf32le"}:
-        return "utf-32-le"
-    if enc in {"utf32be"}:
-        return "utf-32-be"
-    return enc
-
-
-# ------------------------------ OPEN: choose encoding & read ------------------------------
-
-def choose_encoding_and_read(parent: tk.Misc, path: Path) -> Tuple[str, dict]:
+def _normalize_encoding_name(name: str) -> tuple[str, bool]:
     """
-    Modal chooser that proposes an encoding, lets the user override, and returns
-    normalized text + metadata.
-
-    Returns:
-      text: str  (EOL-normalized to LF)
-      meta: dict with keys:
-        - encoding: str
-        - write_bom: bool
-        - had_bom: bool
-        - eol_style: 'lf'|'crlf'|'cr'  (source heuristic)
-        - byte_length: int
+    Returns (base_encoding, add_bom) after interpreting BOM as part of the encoding name.
+    Examples:
+      "utf-8"           -> ("utf-8", False)
+      "utf-8-with-bom"  -> ("utf-8", True)
+      "utf-16-le"       -> ("utf-16-le", False)   # (BOM handling not auto-added here)
     """
-    raw = path.read_bytes()
-    byte_length = len(raw)
-    eol_style = _detect_eol_style(raw)
+    s = (name or "").strip().lower().replace("_", "-")
+    if s in ("utf-8-sig", "utf8-sig", "utf-8-with-bom", "utf8-with-bom"):
+        return ("utf-8", True)
+    return (s, False)
 
-    # 1) BOM?
-    body, bom = _strip_bom(raw)
-    if bom:
-        # Use the BOM’s codec; suggest writing a BOM again on save
-        probe = _try_decode(body, (bom.py_codec,))
-        if probe:
-            suggested_encoding, text = probe
-            suggested_write_bom = True
-        else:
-            # Extremely rare: BOM present but decode fails. Fall back to raw decode showing hex preview.
-            suggested_encoding, text = bom.py_codec, body.decode(bom.py_codec, errors="replace")
-            suggested_write_bom = True
-    else:
-        # 2) No BOM → try UTF-8 strict, then single-byte fallbacks
-        probe = _try_decode(raw, ("utf-8",))
-        if probe:
-            suggested_encoding, text = probe
-            suggested_write_bom = False
-        else:
-            probe = _try_decode(raw, _FALLBACK_SINGLE_BYTE)
-            if probe:
-                suggested_encoding, text = probe
-                suggested_write_bom = False
-            else:
-                # Last resort: show Latin-1 replacement so dialog can still open
-                suggested_encoding, text = "windows-1252", raw.decode("windows-1252", errors="replace")
-                suggested_write_bom = False
+import tkinter as tk
+from tkinter import ttk, filedialog
+from pathlib import Path
 
-    # Open modal dialog to confirm/change encoding
-    enc, write_bom = _encoding_dialog(parent, path, raw, suggested_encoding, suggested_write_bom)
+# ---------- binary I/O ----------
+def read_text_bytes(path: Path) -> bytes:
+    return Path(path).read_bytes()
 
-    # Decode with chosen encoding (strict); we already validated inside dialog
-    text = raw.decode(enc, errors="strict")
-    text = _normalize_eols(text)
-    meta = dict(
-        encoding=enc,
-        write_bom=bool(write_bom),
-        had_bom=bool(bom is not None),
-        eol_style=eol_style,
-        byte_length=byte_length,
-    )
-    return text, meta
+def save_to_path(path: Path, data: bytes) -> None:
+    Path(path).write_bytes(data)
 
-
-def _encoding_dialog(parent: tk.Misc, path: Path, raw: bytes,
-                     suggested_encoding: str, suggested_write_bom: bool) -> Tuple[str, bool]:
+# ---------- decoding ----------
+def suggest_open_encoding(path: Path) -> str:
     """
-    Modal dialog to pick encoding + BOM. Provides live preview; prevents OK if decode fails.
-    Returns (encoding:str, write_bom:bool).
+    Very light suggestion: prefer UTF-8; if file starts with UTF-8 BOM, use utf-8-with-bom
+    (we treat BOM as part of the encoding name).
+    Extend this as needed (uchardet/chardet etc.) — keeping logic here per spec.
     """
-    win = tk.Toplevel(parent)
-    win.withdraw()
-    win.title(f"Open: {path.name}")
-    win.configure(bg=_bg(parent))
-    win.transient(parent)
+    b = read_text_bytes(path)[:4]
+    if b.startswith(b"\xef\xbb\xbf"):
+        return "utf-8-with-bom"
+    return "utf-8"
 
-    # ---- UI bits
-    frm = tk.Frame(win, bg=_bg(parent))
-    frm.pack(fill="both", expand=True, padx=12, pady=12)
+def decode_bytes(b: bytes, encoding: str, errors: str = "strict") -> str:
+    if encoding.lower() == "utf-8-with-bom":
+        # Python codec 'utf-8-sig' strips BOM on decode
+        return b.decode("utf-8-sig", errors=errors)
+    return b.decode(encoding, errors=errors)
 
-    # Row 0: path + size
-    tk.Label(frm, text=str(path), anchor="w", bg=_bg(parent), fg=_fg(parent)).grid(row=0, column=0, columnspan=3, sticky="ew")
+# ---------- encoding ----------
+def encode_text(text: str, encoding: str) -> bytes:
+    """
+    Encode text respecting 'utf-8-with-bom' as a bona fide encoding label.
+    """
+    enc = encoding.lower()
+    if enc == "utf-8-with-bom":
+        raw = text.encode("utf-8")
+        return b"\xef\xbb\xbf" + raw
+    return text.encode(encoding)
+
+import tkinter as tk
+from tkinter import ttk, filedialog
+from pathlib import Path
+
+# … keep your other functions (read_text_bytes, save_to_path, suggest_open_encoding, decode_bytes, encode_text) …
+
+# Shared encoding list (ASCII removed)
+_DEF_ENCODINGS = [
+    "utf-8",
+    "utf-8-with-bom",
+    "utf-16-le",
+    "utf-16-be",
+    "latin-1",
+    "windows-1252",
+]
+
+def _apply_dark_combo_style(owner, stylename="ZP.TCombobox"):
+    """Dark-theme a ttk.Combobox field (note: native dropdown list may still follow system)."""
+    pal = getattr(owner, "_palette", {})
+    bg = pal.get("BG_PANEL", "#111827")
+    fg = pal.get("FG_TEXT",  "#e5e7eb")
+    style = ttk.Style(owner)
     try:
-        import os
-        sz = os.path.getsize(path)
-        size_str = f"{sz} bytes"
-    except Exception:
-        size_str = "unknown size"
-    tk.Label(frm, text=size_str, anchor="w", bg=_bg(parent), fg=_dim(parent)).grid(row=1, column=0, columnspan=3, sticky="w", pady=(0, 6))
+        style.theme_use("clam")
+    except tk.TclError:
+        pass
+    style.configure(stylename,
+                    fieldbackground=bg,
+                    background=bg,
+                    foreground=fg,
+                    arrowcolor=fg)
+    style.map(stylename,
+              fieldbackground=[("readonly", bg)],
+              background=[("readonly", bg)],
+              foreground=[("readonly", fg)])
 
-    # Row 2: encoding dropdown + BOM checkbox
-    tk.Label(frm, text="Encoding", bg=_bg(parent), fg=_fg(parent)).grid(row=2, column=0, sticky="w")
-    enc_var = tk.StringVar(value=_canonical_encoding_name(suggested_encoding))
-    enc_combo = ttk.Combobox(frm, textvariable=enc_var, width=32, values=_encoding_list(), state="readonly")
-    enc_combo.grid(row=2, column=1, sticky="w", padx=(6, 0))
 
-    bom_var = tk.BooleanVar(value=bool(suggested_write_bom))
-    bom_box = ttk.Checkbutton(frm, text="Write BOM on save", variable=bom_var)
-    bom_box.grid(row=2, column=2, sticky="w", padx=(12, 0))
+# ---------- unified “inline” encoding picker for Save Over ----------
+def encode_text_inline(owner, text: str, default_encoding: str):
+    """
+    One modal that’s wide enough; returns (data: bytes, final_encoding: str).
+    BOM is expressed as 'utf-8-with-bom' in the encoding list (no checkbox).
+    """
+    ENCODINGS = list(_DEF_ENCODINGS)
 
-    # Row 3: preview (scrollable)
-    preview = tk.Text(frm, width=100, height=16, bg=_panel(parent), fg=_fg(parent),
-                      insertbackground=_fg(parent), relief="flat", wrap="none")
-    yscroll = ttk.Scrollbar(frm, orient="vertical", command=preview.yview)
-    preview.configure(yscrollcommand=yscroll.set)
-    preview.grid(row=3, column=0, columnspan=3, sticky="nsew", pady=(8, 0))
-    yscroll.grid(row=3, column=3, sticky="ns", pady=(8, 0))
-    frm.grid_rowconfigure(3, weight=1)
-    frm.grid_columnconfigure(0, weight=1)
+    pal = getattr(owner, "_palette", {})
+    bg = pal.get("BG_PANEL", "#111827")
+    fg = pal.get("FG_TEXT",  "#e5e7eb")
 
-    # Row 4: status + buttons
-    status = tk.Label(frm, text="", anchor="w", bg=_bg(parent), fg=_dim(parent))
-    status.grid(row=4, column=0, columnspan=2, sticky="w", pady=(6, 0))
+    win = tk.Toplevel(owner)
+    win.withdraw()
+    win.title("Save Over — Encoding")
+    win.configure(bg=bg)
+    win.transient(owner)
+    win.grab_set()
 
-    btns = tk.Frame(frm, bg=_bg(parent))
-    btns.grid(row=4, column=2, sticky="e", pady=(6, 0))
-    ok_btn = ttk.Button(btns, text="Open")
-    cancel_btn = ttk.Button(btns, text="Cancel", command=lambda: _close_dialog(win, None))
-    cancel_btn.pack(side="right")
-    ok_btn.pack(side="right", padx=(0, 8))
+    frm = tk.Frame(win, bg=bg)
+    frm.pack(fill="both", expand=True, padx=16, pady=16)
 
-    # live decode + preview
-    def refresh_preview(*_):
-        enc = _canonical_encoding_name(enc_var.get())
-        # BOM checkbox is meaningful for UTFs only
-        bom_box.state(["!disabled"] if enc.startswith("utf-") else ["disabled"])
+    tk.Label(frm, text="Encoding:", bg=bg, fg=fg).grid(row=0, column=0, sticky="w")
+
+    _apply_dark_combo_style(owner)
+    enc_var = tk.StringVar(value=default_encoding or "utf-8")
+    enc_box = ttk.Combobox(frm, textvariable=enc_var, values=ENCODINGS, state="readonly",
+                           width=28, style="ZP.TCombobox")
+    enc_box.grid(row=0, column=1, sticky="w", padx=(8, 0))
+
+    # Buttons
+    btns = tk.Frame(frm, bg=bg)
+    btns.grid(row=1, column=0, columnspan=2, sticky="e", pady=(14, 0))
+    out = {"res": None}
+
+    from tkinter import messagebox
+
+    def ok():
+        enc = enc_var.get().strip() or (default_encoding or "utf-8")
         try:
-            txt = raw.decode(enc, errors="strict")
-            shown = _normalize_eols(txt[:100_000])  # cap preview for performance
-            preview.configure(state="normal")
-            preview.delete("1.0", "end")
-            preview.insert("1.0", shown)
-            preview.configure(state="disabled")
-            status.config(text=f"Preview OK — encoding={enc}")
-            ok_btn.config(state="normal")
+            data = encode_text(text, enc)
         except Exception as e:
-            preview.configure(state="normal")
-            preview.delete("1.0", "end")
-            preview.insert("1.0", f"(cannot decode with {enc})\n\n{e}")
-            preview.configure(state="disabled")
-            status.config(text=f"Decoding failed with {enc}")
-            ok_btn.config(state="disabled")
-
-    enc_combo.bind("<<ComboboxSelected>>", refresh_preview)
-
-    def do_ok():
-        enc = _canonical_encoding_name(enc_var.get())
-        # Validate one last time
-        try:
-            raw.decode(enc, errors="strict")
-        except Exception as e:
-            messagebox.showerror("Cannot decode", f"{enc}\n\n{e}", parent=win)
+            messagebox.showerror("Encoding Error", f"Could not encode text:\n{e}")
             return
-        _close_dialog(win, (enc, bool(bom_var.get())))
+        out["res"] = (data, enc)
+        win.destroy()
 
-    ok_btn.config(command=do_ok)
+    def cancel():
+        out["res"] = None
+        win.destroy()
 
-    # map & center
+    ttk.Button(btns, text="OK", command=ok).pack(side="right")
+    ttk.Button(btns, text="Cancel", command=cancel).pack(side="right", padx=(0, 8))
+
+    # Nice sizing/placement
     win.update_idletasks()
-    _center_like(parent, win)
-    win.deiconify()
-    win.lift()
-
-    # take grab after mapped
-    def _try_grab():
-        if win.winfo_viewable():
-            try:
-                win.grab_set()
-            except Exception:
-                win.after(10, _try_grab)
-        else:
-            win.after(10, _try_grab)
-    _try_grab()
-
-    win.bind("<Escape>", lambda e: _close_dialog(win, None))
-    enc_combo.focus_set()
-    refresh_preview()
-    rv = _wait_modal(win)
-    if rv is None:
-        raise RuntimeError("Open canceled by user")
-    enc, write_bom = rv
-    return enc, bool(write_bom)
-
-
-# ------------------------------ SAVE / SAVE AS ------------------------------
-
-def write_text_to_path(path: Path, text: str, *, encoding: str, write_bom: bool) -> None:
-    """
-    Write text to path with the given encoding and optional BOM.
-    The editor buffer is assumed EOL-normalized to LF (\\n), and we keep it that way.
-    """
-    enc = _canonical_encoding_name(encoding)
-    data = text.encode(enc, errors="strict")
-    if write_bom and enc in _UTF_WRITE_BOMS:
-        data = _UTF_WRITE_BOMS[enc] + data
-    path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_suffix(path.suffix + ".tmp~")
-    tmp.write_bytes(data)
-    tmp.replace(path)
-
-
-def save_as_dialog(parent: tk.Misc, initial_path: Path, text: str, *,
-                   encoding: str, write_bom: bool) -> Optional[Tuple[Path, str, bool]]:
-    """
-    Show a Save As dialog. If the user picks a path:
-      - Ask whether to change encoding/BOM via a small modal.
-      - Write the file.
-      - Return (new_path, encoding, write_bom).
-    Else return None.
-    """
-    filename = filedialog.asksaveasfilename(
-        parent=parent,
-        title="Save As",
-        initialdir=str(initial_path.parent if initial_path else Path.home()),
-        initialfile=(initial_path.name if initial_path else ""),
-    )
-    if not filename:
-        return None
-    dest = Path(filename)
-
-    enc, bom = _save_encoding_dialog(parent, encoding, write_bom)
-    write_text_to_path(dest, text, encoding=enc, write_bom=bom)
-    return dest, enc, bom
-
-
-def _save_encoding_dialog(parent: tk.Misc, current_encoding: str, current_bom: bool) -> Tuple[str, bool]:
-    """Small modal asking to confirm/adjust encoding & BOM before writing."""
-    win = tk.Toplevel(parent)
-    win.withdraw()
-    win.title("Save Options")
-    win.configure(bg=_bg(parent))
-    win.transient(parent)
-
-    frm = tk.Frame(win, bg=_bg(parent))
-    frm.pack(fill="both", expand=True, padx=12, pady=12)
-
-    tk.Label(frm, text="Encoding", bg=_bg(parent), fg=_fg(parent)).grid(row=0, column=0, sticky="w")
-    enc_var = tk.StringVar(value=_canonical_encoding_name(current_encoding))
-    enc_combo = ttk.Combobox(frm, textvariable=enc_var, width=32, values=_encoding_list(), state="readonly")
-    enc_combo.grid(row=0, column=1, sticky="w", padx=(6, 0))
-
-    bom_var = tk.BooleanVar(value=bool(current_bom))
-    bom_box = ttk.Checkbutton(frm, text="Write BOM", variable=bom_var)
-    bom_box.grid(row=0, column=2, sticky="w", padx=(12, 0))
-
-    def on_enc_change(*_):
-        enc = _canonical_encoding_name(enc_var.get())
-        bom_box.state(["!disabled"] if enc.startswith("utf-") else ["disabled"])
-    enc_combo.bind("<<ComboboxSelected>>", on_enc_change)
-    on_enc_change()
-
-    btns = tk.Frame(frm, bg=_bg(parent))
-    btns.grid(row=1, column=0, columnspan=3, sticky="e", pady=(12, 0))
-    ttk.Button(btns, text="Cancel", command=lambda: _close_dialog(win, None)).pack(side="right")
-    ttk.Button(btns, text="Save", command=lambda: _close_dialog(win, (_canonical_encoding_name(enc_var.get()),
-                                                                      bool(bom_var.get())))).pack(side="right", padx=(0, 8))
-
-    win.update_idletasks()
-    _center_like(parent, win)
-    win.deiconify()
-    win.lift()
-
-    def _try_grab():
-        if win.winfo_viewable():
-            try: win.grab_set()
-            except Exception: win.after(10, _try_grab)
-        else:
-            win.after(10, _try_grab)
-    _try_grab()
-
-    win.bind("<Escape>", lambda e: _close_dialog(win, None))
-    enc_combo.focus_set()
-    rv = _wait_modal(win)
-    if rv is None:
-        raise RuntimeError("Save canceled by user")
-    return rv
-
-
-# ------------------------------ UI utilities ------------------------------
-
-def _bg(w: tk.Misc) -> str:
-    return getattr(getattr(w, "_palette", None), "get", lambda *_: "#0b1220")("BG")  # type: ignore
-
-def _panel(w: tk.Misc) -> str:
-    return getattr(getattr(w, "_palette", None), "get", lambda *_: "#111827")("BG_PANEL")  # type: ignore
-
-def _fg(w: tk.Misc) -> str:
-    return getattr(getattr(w, "_palette", None), "get", lambda *_: "#e5e7eb")("FG_TEXT")  # type: ignore
-
-def _dim(w: tk.Misc) -> str:
-    return "#9ca3af"
-
-def _center_like(parent: tk.Misc, win: tk.Toplevel) -> None:
     try:
-        px, py = parent.winfo_rootx(), parent.winfo_rooty()
-        pw, ph = parent.winfo_width(), parent.winfo_height()
-        ww, wh = win.winfo_reqwidth(), win.winfo_reqheight()
+        px, py = owner.winfo_rootx(), owner.winfo_rooty()
+        pw, ph = owner.winfo_width(), owner.winfo_height()
+        ww, wh = max(420, win.winfo_reqwidth()), max(140, win.winfo_reqheight())
         x = px + max(0, (pw - ww) // 2)
         y = py + max(0, (ph - wh) // 3)
+        win.geometry(f"{ww}x{wh}+{x}+{y}")
+    except Exception:
+        pass
+    win.deiconify()
+    win.lift()
+    win.focus_set()
+    win.wait_window()
+
+    if not out["res"]:
+        raise RuntimeError("Canceled")
+    return out["res"]
+
+
+# ---------- Save As (single dialog with encoding) ----------
+def prompt_save_as_with_encoding(owner, suggest_path: Path | None, suggest_enc: str):
+    """
+    Built-in save-as with encoding selector in the same dialog.
+    Returns (path: Path, encoding: str) or None.
+    """
+    ENCODINGS = list(_DEF_ENCODINGS)
+
+    pal = getattr(owner, "_palette", {})
+    bg = pal.get("BG_PANEL", "#111827")
+    fg = pal.get("FG_TEXT",  "#e5e7eb")
+
+    win = tk.Toplevel(owner)
+    win.withdraw()
+    win.title("Save As")
+    win.configure(bg=bg)
+    win.transient(owner)
+    win.grab_set()
+
+    frm = tk.Frame(win, bg=bg)
+    frm.pack(fill="both", expand=True, padx=16, pady=16)
+
+    # path row
+    tk.Label(frm, text="File:", bg=bg, fg=fg).grid(row=0, column=0, sticky="w")
+    path_var = tk.StringVar(value=(str(suggest_path) if suggest_path else ""))
+    entry = tk.Entry(frm, textvariable=path_var, bg="#0b1220", fg=fg, insertbackground=fg, relief="flat", width=48)
+    entry.grid(row=0, column=1, sticky="we", padx=(8, 0))
+    frm.grid_columnconfigure(1, weight=1)
+
+    def browse():
+        initfile = suggest_path.name if suggest_path else "untitled.txt"
+        fname = filedialog.asksaveasfilename(parent=owner, initialfile=initfile)
+        if fname:
+            path_var.set(fname)
+
+    ttk.Button(frm, text="Browse…", command=browse).grid(row=0, column=2, sticky="w", padx=(8, 0))
+
+    # encoding row
+    tk.Label(frm, text="Encoding:", bg=bg, fg=fg).grid(row=1, column=0, sticky="w", pady=(10,0))
+    _apply_dark_combo_style(owner)
+    enc_var = tk.StringVar(value=(suggest_enc or "utf-8"))
+    enc_box = ttk.Combobox(frm, textvariable=enc_var, values=ENCODINGS, state="readonly",
+                           width=28, style="ZP.TCombobox")
+    enc_box.grid(row=1, column=1, sticky="w", padx=(8, 0), pady=(10,0))
+
+    # buttons
+    btns = tk.Frame(frm, bg=bg)
+    btns.grid(row=2, column=0, columnspan=3, sticky="e", pady=(14, 0))
+    out = {"res": None}
+
+    from tkinter import messagebox
+
+    def ok():
+        p = path_var.get().strip()
+        if not p:
+            messagebox.showerror("Save As", "Please choose a file path.")
+            return
+        enc = enc_var.get().strip() or "utf-8"
+        out["res"] = (Path(p), enc)
+        win.destroy()
+
+    def cancel():
+        out["res"] = None
+        win.destroy()
+
+    ttk.Button(btns, text="OK", command=ok).pack(side="right")
+    ttk.Button(btns, text="Cancel", command=cancel).pack(side="right", padx=(0, 8))
+
+    # sizing
+    win.update_idletasks()
+    try:
+        px, py = owner.winfo_rootx(), owner.winfo_rooty()
+        pw, ph = owner.winfo_height(), owner.winfo_height()
+    except Exception:
+        px = py = 0
+        pw = ph = 800
+    ww, wh = 600, 200
+    try:
+        x = px + max(0, (pw - ww) // 2)
+        y = py + max(0, (ph - wh) // 3)
+        win.geometry(f"{ww}x{wh}+{x}+{y}")
+    except Exception:
+        pass
+
+    win.deiconify()
+    win.lift()
+    win.focus_set()
+    win.wait_window()
+    return out["res"]
+
+
+# ---------- Integrated “Open Selected” chooser (system vs Zeropad+encoding) ----------
+def choose_open_selected(owner, path: Path):
+    """
+    Ask how to open the selected file:
+      - Cancel → returns None
+      - Open with System Default → returns "system"
+      - Open in Zeropad → returns "zeropad"
+
+    Uses a safe, deferred grab to avoid 'grab failed' and shutdown races.
+    """
+    import tkinter as tk
+    from tkinter import ttk
+
+    # Palette (dark)
+    BG = getattr(owner, "_palette", {}).get("BG_PANEL", "#111827")
+    FG = getattr(owner, "_palette", {}).get("FG_TEXT", "#e5e7eb")
+    BTN_BG = "#1f2937"
+    BTN_BG_H = "#374151"
+
+    win = tk.Toplevel(owner)
+    win.withdraw()
+    win.title("Open Selected")
+    win.configure(bg=BG)
+    win.transient(owner)
+    win.resizable(False, False)
+
+    style = ttk.Style(owner)
+    try:
+        style.theme_use("clam")
+    except tk.TclError:
+        pass
+    style.configure("Dlg.TButton", background=BTN_BG, foreground=FG, padding=(10, 4), borderwidth=0)
+    style.map("Dlg.TButton",
+              background=[("active", BTN_BG_H)],
+              foreground=[("disabled", "#9ca3af")])
+
+    # Content
+    tk.Label(win, text="Open selected file with:", bg=BG, fg=FG, anchor="w").pack(
+        side="top", fill="x", padx=14, pady=(14, 6)
+    )
+    tk.Label(win, text=str(path), bg=BG, fg=FG, anchor="w", justify="left", wraplength=640).pack(
+        side="top", fill="x", padx=14, pady=(0, 10)
+    )
+
+    btns = tk.Frame(win, bg=BG)
+    btns.pack(side="top", fill="x", padx=14, pady=(0, 14))
+
+    choice = {"val": None}
+
+    def on_cancel():
+        choice["val"] = None
+        _close()
+
+    def on_system():
+        choice["val"] = "system"
+        _close()
+
+    def on_zeropad():
+        choice["val"] = "zeropad"
+        _close()
+
+    def _close():
+        # Release grab if we own it, then destroy
+        if win.winfo_exists():
+            try:
+                win.grab_release()
+            except Exception:
+                pass
+            win.destroy()
+
+    ttk.Button(btns, text="Cancel", style="Dlg.TButton", command=on_cancel).pack(side="right")
+    ttk.Button(btns, text="Open in Zeropad", style="Dlg.TButton", command=on_zeropad).pack(side="right", padx=(0, 8))
+    ttk.Button(btns, text="Open with System Default", style="Dlg.TButton", command=on_system).pack(side="right", padx=(0, 8))
+
+    win.bind("<Escape>", lambda e: on_cancel())
+    win.protocol("WM_DELETE_WINDOW", on_cancel)
+
+    # Center relative to owner, then show
+    win.update_idletasks()
+    try:
+        ox, oy = owner.winfo_rootx(), owner.winfo_rooty()
+        ow, oh = owner.winfo_width(), owner.winfo_height()
+        ww, wh = win.winfo_reqwidth(), win.winfo_reqheight()
+        x = ox + max(0, (ow - ww) // 2)
+        y = oy + max(0, (oh - wh) // 3)
         win.geometry(f"+{x}+{y}")
     except Exception:
         pass
 
-def _wait_modal(win: tk.Toplevel):
-    rv_container = {"rv": None}
-    def _setter(val): rv_container["rv"] = val
-    win._editorio_rv = _setter  # type: ignore[attr-defined]
-    win.wait_window()
-    return rv_container["rv"]
+    win.deiconify()
+    win.lift()
 
-def _close_dialog(win: tk.Toplevel, rv):
-    # store rv and destroy
-    try:
-        setter = getattr(win, "_editorio_rv")  # type: ignore[attr-defined]
-        if callable(setter):
-            setter(rv)
-    except Exception:
-        pass
-    try:
-        win.grab_release()
-    except Exception:
-        pass
-    win.destroy()
+    # Safe, deferred grab loop to avoid "grab failed" and shutdown races.
+    # If the window is destroyed (e.g., app exit), we simply stop retrying.
+    def _try_grab():
+        if not win.winfo_exists():
+            return
+        # Only grab once it’s viewable
+        if not win.winfo_viewable():
+            win.after(15, _try_grab)
+            return
+        try:
+            win.grab_set()
+        except tk.TclError:
+            # Retry shortly; some WMs need a second tick
+            win.after(15, _try_grab)
 
-def _encoding_list() -> list[str]:
-    """Common choices first; editable later if needed."""
-    return [
-        "utf-8",
-        "utf-16-le", "utf-16-be",
-        "utf-32-le", "utf-32-be",
-        "windows-1252", "iso-8859-1",
-        "shift-jis", "euc-jp",
-        "gb18030",
-        "koi8-r",
-        "mac-roman",
-    ]
+    win.after(0, _try_grab)
+    try:
+        win.wait_window()
+    except tk.TclError:
+        # If the app is closing, the window may be gone already
+        return None
+
+    return choice["val"]
