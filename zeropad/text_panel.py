@@ -30,7 +30,7 @@ DARK_PANEL_2 = "#0f172a"
 FG_TEXT      = "#e5e7eb"
 FG_DIM       = "#9ca3af"
 
-SAFE_FACE_BAD = "☹"
+SAFE_FACE_BAD = "😡"
 
 # Repaint throttles
 REPAINT_FAST_MS = 60

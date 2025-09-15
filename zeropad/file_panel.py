@@ -25,7 +25,7 @@ column sizes. The refresh interval is configurable via FS_REFRESH_MS.
 SAFETY FACES:
 
 The “safety” column has an empty heading (no '!') and shows either an empty cell
-(safe/OK) or a ☹ when the filename fails the aggressive deceptive or filename check.
+(safe/OK) or a 😡 when the filename fails the aggressive deceptive or filename check.
 You can sort by this column; triangles show like any other heading.
 
 MODE STRINGS:
@@ -78,7 +78,7 @@ class FilePanel:
     _COL_TARGET_PX_DEFAULT: Dict[str, int] = {
         "#0":       120,   # icon/kind or filename (when Type OFF)
         "name":     260,   # filename (flex)
-        "safe":      28,   # safety faces (empty or ☹)
+        "safe":      28,   # safety faces (empty or 😡)
         "size":     110,
         "modified": 180,
         "mode":     140,   # wider now for rwx symbolic
@@ -383,10 +383,10 @@ class FilePanel:
         return (name is None) or (name == "") or (len(self._filename_issues(name)) == 0)
 
     def _tree_safety_icon(self, name: str) -> str:
-        return "" if self._is_name_safe(name) else "☹"
+        return "" if self._is_name_safe(name) else "😡"
 
     def _meta_safety_icon(self, name: str) -> str:
-        return "🙂" if self._is_name_safe(name) else "☹"
+        return "🙂" if self._is_name_safe(name) else "😡"
 
     # ---------------- Column model ----------------
 
