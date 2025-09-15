@@ -76,13 +76,23 @@ def decode_bytes(b: bytes, encoding: str, errors: str = "strict") -> str:
         return b.decode("utf-8-sig", errors=errors)
     return b.decode(encoding, errors=errors)
 
-def encode_text(text: str, encoding: str) -> bytes:
+def encode_text(text: str, encoding: str, add_bom: bool | None = None) -> bytes:
     """
     Encode text, honoring 'utf-8-with-bom' as a real label.
+    If add_bom is None, it is inferred from the encoding label.
     """
     enc = (encoding or "").strip().lower()
-    if enc == "utf-8-with-bom":
-        return b"\xef\xbb\xbf" + text.encode("utf-8")
+
+    # Infer BOM if not explicitly provided
+    if add_bom is None:
+        add_bom = (enc == "utf-8-with-bom")
+
+    if enc in ("utf-8", "utf8", "utf-8-with-bom"):
+        raw = text.encode("utf-8")
+        if add_bom:
+            return b"\xef\xbb\xbf" + raw
+        return raw
+
     return text.encode(encoding)
 
 # =============================================================================
@@ -120,6 +130,33 @@ def maybe_choose_encoding(owner: tk.Misc,
     if new_enc.strip().lower() == "utf-8-with-bom":
         norm = "utf-8-with-bom"
     return (norm, "strict")
+
+# =============================================================================
+# Prompt for open encoding (API used by text panel)
+# =============================================================================
+
+def prompt_open_with_encoding(owner: tk.Misc, path: Path | str) -> tuple[str, str, bool]:
+    """
+    Suggest an encoding for opening `path`, allow override, and return:
+      (encoding, errors, add_bom)
+    For open, add_bom reflects whether the selected encoding implies BOM on save,
+    i.e., True when encoding == 'utf-8-with-bom'.
+    """
+    suggest = suggest_open_encoding(path)
+    res = maybe_choose_encoding(
+        owner,
+        suggest_encoding=suggest,
+        title="Open — Encoding",
+        body=f"Guessed encoding for:\n{path}",
+    )
+    if not res:
+        # User cancelled; propagate a no-op by returning the suggestion with strict
+        # semantics so caller can choose to abort based on UI flow. However, since
+        # text_panel checks for a truthy result before proceeding, we can still
+        # return a consistent triple and let the caller decide.
+        return (suggest, "strict", suggest == "utf-8-with-bom")
+    enc, errors = res
+    return (enc, errors, enc.strip().lower() == "utf-8-with-bom")
 
 # =============================================================================
 # Theming helpers
@@ -186,7 +223,7 @@ def encode_text_inline(owner: tk.Misc, text: str, default_encoding: str) -> tupl
     def ok():
         enc = enc_var.get().strip() or (default_encoding or "utf-8")
         try:
-            data = encode_text(text, enc)
+            data = encode_text(text, enc)  # BOM inferred from label
         except Exception as e:
             messagebox.showerror("Encoding Error", f"Could not encode text:\n{e}", parent=win)
             return
@@ -225,16 +262,23 @@ def encode_text_inline(owner: tk.Misc, text: str, default_encoding: str) -> tupl
 
 def prompt_save_as_with_encoding(owner: tk.Misc,
                                  suggest_path: Path | None,
-                                 suggest_enc: str) -> tuple[Path, str] | None:
+                                 suggest_enc: str,
+                                 suggest_bom: bool) -> tuple[Path, str, str, bool] | None:
     """
     'Save As' dialog with an inline encoding combobox.
-    Returns (path: Path, encoding: str) or None.
+    Returns (path: Path, encoding: str, errors: str, add_bom: bool) or None.
+    If suggest_bom is True and suggest_enc is a UTF-8 variant, we preselect 'utf-8-with-bom'.
     """
     ENCODINGS = list(_DEF_ENCODINGS)
 
     pal = getattr(owner, "_palette", {})
     bg = pal.get("BG_PANEL", "#111827")
     fg = pal.get("FG_TEXT",  "#e5e7eb")
+
+    # Derive default encoding selection
+    enc_default = (suggest_enc or "utf-8").strip().lower()
+    if suggest_bom and enc_default in ("utf-8", "utf8", "utf-8-with-bom"):
+        enc_default = "utf-8-with-bom"
 
     win = tk.Toplevel(owner)
     win.withdraw()
@@ -265,7 +309,7 @@ def prompt_save_as_with_encoding(owner: tk.Misc,
     # Encoding row
     tk.Label(frm, text="Encoding:", bg=bg, fg=fg).grid(row=1, column=0, sticky="w", pady=(10, 0))
     _apply_dark_combo_style(owner)
-    enc_var = tk.StringVar(value=(suggest_enc or "utf-8"))
+    enc_var = tk.StringVar(value=enc_default or "utf-8")
     enc_box = ttk.Combobox(frm, textvariable=enc_var, values=ENCODINGS,
                            state="readonly", width=28, style="ZP.TCombobox")
     enc_box.grid(row=1, column=1, sticky="w", padx=(8, 0), pady=(10, 0))
@@ -273,7 +317,7 @@ def prompt_save_as_with_encoding(owner: tk.Misc,
     # Buttons
     btns = tk.Frame(frm, bg=bg)
     btns.grid(row=2, column=0, columnspan=3, sticky="e", pady=(14, 0))
-    out: dict[str, tuple[Path, str] | None] = {"res": None}
+    out: dict[str, tuple[Path, str, str, bool] | None] = {"res": None}
 
     def ok():
         p = path_var.get().strip()
@@ -281,7 +325,8 @@ def prompt_save_as_with_encoding(owner: tk.Misc,
             messagebox.showerror("Save As", "Please choose a file path.", parent=win)
             return
         enc = enc_var.get().strip() or "utf-8"
-        out["res"] = (Path(p), enc)
+        add_bom = (enc.lower() == "utf-8-with-bom")
+        out["res"] = (Path(p), enc, "strict", add_bom)
         win.destroy()
 
     def cancel():
