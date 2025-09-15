@@ -3,37 +3,42 @@ FILE PANEL (Zeropad)
 
 COLUMN WIDTH MODEL — READ THIS BEFORE EDITING:
 
-We use a FIXED-WIDTH model for columns with a single FLEX column for the filename.
+We use a FIXED-WIDTH model for non-filename columns, with ONE flex column
+(the filename) that absorbs remaining space. Users can drag separators to
+resize fixed columns; those pixel widths are persisted in `_col_target_px`.
 
-- Each non-filename column has a persistent desired pixel width stored in `self._col_target_px[col]`.
-- Each column also has a min and a max width (`_col_min_px`, `_col_max_px_base` plus dynamic caps).
-- Exactly ONE column is the “flex” (expanding) column:
-    • If Type is ON  → 'name' is the filename column and is the flex column.
-    • If Type is OFF → '#0' shows the filename and becomes the flex column.
-- Layout:
-    1) Clamp each FIXED (non-filename) column to [min..max] and sum them.
-    2) Flex column width = remaining pixels, clamped to its min (no max; it can grow indefinitely).
-- When the user drags a separator, we update ONLY that fixed column’s target width. The flex column is
-  recomputed automatically.
+Layout on each refresh:
+  1) For every *visible* non-filename column, clamp the persisted target px
+     to [min..max] and sum them.
+  2) Filename column width = remaining pixels, clamped to its own min (no max).
+     This guarantees the tree fills the full width without snapping weirdly.
 
-EXTENSION → MIME OVERRIDES:
+Max widths keep icon/safety columns narrow enough to avoid “ugly stretching”.
 
-We load a pragmatic mapping from a file named `extensions.txt` (optional). Format:
+PERIODIC REFRESH:
 
-    # comments and blank lines allowed
-    .py   text/x-python
-    py    text/x-python
-    .mjs  application/javascript
-    jsx = text/javascript
+We compute a signature of the current directory (names + size + mtime) and only
+repaint the tree when it changes, preserving the current selection and all
+column sizes. The refresh interval is configurable via FS_REFRESH_MS.
 
-Separator can be whitespace or '='. Leading '.' on extension is optional.
+SAFETY FACES:
 
-Overrides are preferred over GIO content guessing (fixes empty .py → text/x-python).
+The “safety” column has an empty heading (no '!') and shows either an empty cell
+(safe/OK) or a ☹ when the filename fails the aggressive deceptive or filename check.
+You can sort by this column; triangles show like any other heading.
+
+MODE STRINGS:
+
+Mode is displayed and edited as symbolic `drwxr-xr-x` (no octal). We parse and
+apply this back to the filesystem. The leading `d` (for directories) is accepted
+but ignored on write; we write only the permission bits.
 """
 
 import os
 import stat
 import time
+import re
+import subprocess
 import tkinter as tk
 import tkinter.font as tkfont
 from tkinter import ttk, messagebox
@@ -63,8 +68,34 @@ except Exception:
     _HAS_GIO = False
     _HAS_GDKPB = False
 
+
 class FilePanel:
-    # ---------------- init & UI ----------------
+    # ---------- constants you may want to tweak ----------
+    FS_REFRESH_MS = 2000  # periodic filesystem refresh (ms)
+
+    # Default desired pixel widths (for fixed columns). Filename flexes.
+    _COL_TARGET_PX_DEFAULT: Dict[str, int] = {
+        "#0":       120,   # icon/kind or filename (when Type OFF)
+        "name":     260,   # filename (flex)
+        "safe":      28,   # safety faces (empty or ☹)
+        "size":     110,
+        "modified": 180,
+        "mode":     140,   # wider now for rwx symbolic
+    }
+    # Minimum widths
+    _COL_MIN_PX: Dict[str, int] = {
+        "#0": 56, "name": 140, "safe": 24, "size": 80, "modified": 140, "mode": 110
+    }
+    # Base maximum widths (dynamic caps may override at runtime)
+    _COL_MAX_PX_BASE: Dict[str, int] = {
+        "#0": 240, "name": 10_000, "safe": 28, "size": 220, "modified": 320, "mode": 220
+    }
+    # Base column alignments (dynamic for "#0" depending on icon vs text)
+    _COL_ANCHOR_BASE: Dict[str, str] = {
+        "#0": "w", "name": "w", "safe": "center", "size": "w", "modified": "w", "mode": "w"
+    }
+
+    # -----------------------------------------------------
 
     def init_file_panel(self):
         """Build the left File panel with three vertically stacked subpanels."""
@@ -81,10 +112,10 @@ class FilePanel:
         self._ACC_BG_D = "#0b1220"
         self._ERR_RED  = "#ef4444"
 
-        # Load ext overrides from extensions.txt (if present)
+        # Load ext overrides from extensions.txt (required)
         self._ext_overrides = self._load_ext_overrides()
 
-        # Root frame for the file panel
+        # Root frame
         self.fm = tk.Frame(self.hpaned, bg=self._BG_PANEL)
 
         # ---------- Styles ----------
@@ -154,22 +185,13 @@ class FilePanel:
                                       size=base.cget("size"), weight="bold")
         self.tree.tag_configure("bold", font=self._bold_font)
 
-        # --- Width model: desired pixel widths (only filename flexes) ---
-        self._col_target_px: Dict[str, int] = {
-            "#0":       120,  # kind text OR filename (when Type OFF). Capped to 40px in icon mode.
-            "name":     260,  # filename (when Type ON) — this FLEXes
-            "safe":      28,  # '!' column — narrow, centered
-            "size":     110,
-            "modified": 180,
-            "mode":      90,
-        }
-        self._col_min_px: Dict[str, int] = {
-            "#0": 56, "name": 120, "safe": 28, "size": 80, "modified": 140, "mode": 70
-        }
-        self._col_max_px_base: Dict[str, int] = {
-            "#0": 240, "name": 10_000, "safe": 28, "size": 220, "modified": 280, "mode": 120
-        }
+        # --- Width model storage ---
+        self._col_target_px: Dict[str, int] = dict(self._COL_TARGET_PX_DEFAULT)
+        self._col_min_px: Dict[str, int] = dict(self._COL_MIN_PX)
+        self._col_max_px_base: Dict[str, int] = dict(self._COL_MAX_PX_BASE)
+        self._col_anchor_base: Dict[str, str] = dict(self._COL_ANCHOR_BASE)
 
+        # Resizing
         self._resizing_col = False
         self._resized_col: Optional[str] = None
         self.tree.bind("<ButtonPress-1>", self._on_tree_press, add="+")
@@ -179,11 +201,9 @@ class FilePanel:
         self.tree.bind("<<TreeviewSelect>>", self._on_tree_select)
         self.tree.bind("<Double-1>", self._on_tree_double_click)
 
-        # Map item_id -> dict(path=Path, kind='dir'|'file'|'create_dir'|'create_file', role='...')
+        # Node map and state
         self._node: Dict[str, Dict] = {}
-
-        # Sorting state
-        self._sort_key = "#0"   # start on Type column
+        self._sort_key = "#0"   # start on Type
         self._sort_desc = False
         self._last_cwd: Path | None = None
 
@@ -206,12 +226,12 @@ class FilePanel:
         self.col_modified = tk.BooleanVar(value=False)
         self.col_mode     = tk.BooleanVar(value=False)
 
-        # Row 0: Type (unified)
+        # Row 0: Type (unified) — icon + MIME (or plain kind)
         self._row0_left  = tk.Frame(form, bg=self._BG_PANEL)
         self._row0_value = tk.Frame(form, bg=self._BG_PANEL)
         self._row0_left.grid(row=0, column=0, sticky="w", padx=(0, 6))
         self._row0_value.grid(row=0, column=1, sticky="ew", pady=2)
-        self._update_row0_mode_ui()  # builds controls depending on MIME availability
+        self._update_row0_mode_ui()
 
         # Row 1: Filename (label disabled + entry + safety glyph)
         fn_label_wrap = tk.Frame(form, bg=self._BG_PANEL)
@@ -244,7 +264,7 @@ class FilePanel:
                                       insertbackground=self._FG_TEXT, relief="flat")
         self.meta_modified.grid(row=3, column=1, sticky="ew", pady=2)
 
-        # Row 4: Mode
+        # Row 4: Mode (symbolic rwx)
         ttk.Checkbutton(form, variable=self.col_mode, text="Mode",
                         command=self._apply_tree_columns,
                         style="NoHover.TCheckbutton", takefocus=False)\
@@ -264,20 +284,29 @@ class FilePanel:
         self.delete_btn.pack(side="left")
         self._set_accept_enabled(False)
 
-        # Selection tracking
+        # Selection & state
         self._selected_path: Path | None = None
         self._meta_original = {"filename": "", "modified": "", "mode": ""}
         self._create_mode: str | None = None  # None | "dir" | "file"
 
-        # Live-edit dirty tracking and safety glyph updates
         for w in (self.meta_filename, self.meta_modified, self.meta_mode):
             w.bind("<KeyRelease>", self._on_meta_edited)
 
-        # Image cache for icons
+        # Image cache
         self._img_cache: dict[str, tk.PhotoImage] = {}
 
-        # Build columns & rows
+        # Directory signature for periodic refresh
+        self._dir_sig = None
+        self._fs_after_id = None
+
+        # Build columns & first paint
         self._apply_tree_columns()
+
+        # Start periodic refresh & register cleanup
+        self._schedule_fs_refresh()
+        if not hasattr(self, "_cleanup_hooks"):
+            self._cleanup_hooks = []
+        self._cleanup_hooks.append(self._cancel_fs_refresh)
 
     # ---------------- MIME toggle & Row0 ----------------
 
@@ -359,9 +388,9 @@ class FilePanel:
     def _tree_columns(self):
         cols, heads = [], {}
         if self.col_type.get():
-            cols += ["name", "safe"]; heads["name"] = "Filename"; heads["safe"] = "!"
+            cols += ["name", "safe"]; heads["name"] = "Filename"; heads["safe"] = ""
         else:
-            cols += ["safe"];         heads["safe"] = "!"
+            cols += ["safe"];         heads["safe"] = ""
         if self.col_size.get():     cols.append("size");     heads["size"] = "Size"
         if self.col_modified.get(): cols.append("modified"); heads["modified"] = "Modified"
         if self.col_mode.get():     cols.append("mode");     heads["mode"] = "Mode"
@@ -371,14 +400,15 @@ class FilePanel:
         cols, heads = self._tree_columns()
         self.tree.configure(columns=cols)
 
-        # #0 heading (empty label for icon column, triangles still shown)
+        # #0 heading: empty label when showing icons; triangles still appear
         self.tree.heading("#0", text=self._sort_label_for("#0"), anchor="center",
                           command=lambda: self._on_heading_click("#0"))
         for c in ("name", "safe", "size", "modified", "mode"):
             if c not in cols:
                 continue
             if c == "safe":
-                self.tree.heading(c, text=heads.get(c, "!"), anchor="center")
+                self.tree.heading(c, text=self._sort_label_for("safe"),
+                                  anchor="center", command=lambda col="safe": self._on_heading_click(col))
                 continue
             self.tree.heading(c, text=self._sort_label_for(c), command=lambda col=c: self._on_heading_click(col))
 
@@ -391,11 +421,13 @@ class FilePanel:
     def _dynamic_max_caps(self) -> Dict[str, int]:
         caps = dict(self._col_max_px_base)
         if self.col_type.get() and self._mime_enabled():
-            caps["#0"] = 40  # icon column
+            caps["#0"] = 40  # icon column stays tiny
         else:
             if not self.col_type.get():
-                caps["#0"] = 10_000  # #0 is filename → allow growth
+                caps["#0"] = 10_000  # when #0 is filename, allow growth
         caps[self._filename_flex_col()] = 10_000_000  # filename flex column
+        # Safety column should never bloat
+        caps["safe"] = min(caps.get("safe", 28), 28)
         return caps
 
     def _apply_fixed_widths(self):
@@ -427,11 +459,9 @@ class FilePanel:
 
         for c in vis:
             if c == "#0":
-                anchor = "center" if (self.col_type.get() and self._mime_enabled()) else "w"
-            elif c == "safe":
-                anchor = "center"
+                anchor = "center" if (self.col_type.get() and self._mime_enabled()) else self._col_anchor_base.get("#0", "w")
             else:
-                anchor = "w"
+                anchor = self._col_anchor_base.get(c, "w")
             self.tree.column(c, width=max(1, col_widths[c]), stretch=True, anchor=anchor)
 
         # Park hidden data columns
@@ -439,30 +469,31 @@ class FilePanel:
             if c not in self.tree["columns"]:
                 continue
             if c not in vis:
-                self.tree.column(c, width=self._col_min_px.get(c, 50), stretch=False, anchor="w")
+                self.tree.column(c, width=self._col_min_px.get(c, 50), stretch=False,
+                                 anchor=self._col_anchor_base.get(c, "w"))
 
-    # --- capture user resize to update fixed target widths
+    # capture user resize to update fixed target widths
     def _on_tree_press(self, event):
         self._resizing_col = (self.tree.identify_region(event.x, event.y) == "separator")
         self._resized_col = None
         if self._resizing_col:
             col_id = self.tree.identify_column(event.x)  # '#0', '#1', ...
-            vis = self._visible_cols()
             if col_id == "#0":
                 self._resized_col = "#0"
             else:
                 try:
                     idx = int(col_id.replace("#", "")) - 1
-                    if 0 <= idx < len(self.tree["columns"]):
-                        self._resized_col = self.tree["columns"][idx]
+                    cols = list(self.tree["columns"])
+                    if 0 <= idx < len(cols):
+                        self._resized_col = cols[idx]
                 except Exception:
                     self._resized_col = None
 
     def _on_tree_release(self, _event):
         if self._resizing_col:
             vis = self._visible_cols()
-            flex = self._filename_flex_col()
-            if self._resized_col in vis and self._resized_col != flex:
+            # Allow resizing any visible fixed column; resizing the flex column does nothing meaningful
+            if self._resized_col in vis and self._resized_col != self._filename_flex_col():
                 try:
                     cur = int(self.tree.column(self._resized_col, option="width"))
                     caps = self._dynamic_max_caps()
@@ -478,7 +509,7 @@ class FilePanel:
     # ---------------- Sorting ----------------
 
     def _on_show_hidden(self):
-        self.refresh_file_panel()
+        self.refresh_file_panel(force=True)
 
     def _effective_sort_attr(self, col: str) -> str:
         if col == "#0":
@@ -491,31 +522,33 @@ class FilePanel:
         if col == "#0":
             base = "" if (self.col_type.get() and self._mime_enabled()) else ("Kind" if self.col_type.get() else "Filename")
         else:
-            base = "Filename" if col == "name" else ("!" if col == "safe" else col.capitalize())
-        if col == self._sort_key and col != "safe":
+            if col == "safe":
+                base = ""  # header is visually empty; triangles still show
+            else:
+                base = "Filename" if col == "name" else col.capitalize()
+        if col == self._sort_key:
             return f"{base} {'▼' if not self._sort_desc else '▲'}".strip()
         return base
 
     def _key_for_entry(self, p: Path, key: str):
         """
-        Stable, minimal keys:
-        - Directories before files (0/1).
-        - Then the requested attribute.
-        - IMPORTANT: No fallback to name here (unless key == 'name'). Ties remain in prior order.
+        Stable, minimal keys (no fallback to name unless key=='name').
+        Directories are grouped before files (0/1).
         """
         is_dir = 0 if p.is_dir() else 1
         try:
             if key == "name":
                 return (is_dir, p.name.lower())
             if key == "kind":
-                # group dirs vs files, no further tiebreaker
-                return (is_dir, 0)  # same value within group → stable by prior order
+                return (is_dir, 0)  # folders vs files; ties stable
             if key == "mime":
                 if p.is_dir():
-                    return (0, 0)  # dirs grouped; equal → stable
+                    return (0, 0)
                 mime, _ = self._guess_mime_for(p)
-                mime = (mime or "application/octet-stream").lower()
-                return (1, mime)
+                return (1, (mime or "application/octet-stream").lower())
+            if key == "safe":
+                unsafe = 0 if not self._is_name_safe(p.name) else 1  # unsafe first
+                return (is_dir, unsafe)
             if key == "size":
                 st = p.stat()
                 return (is_dir, -1 if p.is_dir() else st.st_size)
@@ -558,11 +591,61 @@ class FilePanel:
             self._sort_key = col
             self._sort_desc = False
         self._apply_tree_columns()
-        self.refresh_file_panel()
+        self.refresh_file_panel(force=True)
+
+    # ---------------- Periodic refresh ----------------
+
+    def _dir_signature(self) -> Tuple:
+        """Return a cheap signature of the visible dir contents for change detection."""
+        try:
+            entries = list(self.cwd.iterdir())
+        except Exception:
+            entries = []
+        show_hidden = self.show_hidden.get()
+        def filt(e: Path):
+            try:
+                nm = e.name
+                if not show_hidden and nm.startswith("."):
+                    return False
+                return e.exists()
+            except Exception:
+                return False
+        items = []
+        for e in entries:
+            if not filt(e):
+                continue
+            try:
+                st = e.stat()
+                items.append((e.is_dir(), e.name, st.st_size if e.is_file() else -1, int(st.st_mtime)))
+            except Exception:
+                items.append((e.is_dir(), e.name, -1, 0))
+        items.sort()
+        return tuple(items)
+
+    def _schedule_fs_refresh(self):
+        self._fs_after_id = self.after(self.FS_REFRESH_MS, self._fs_refresh_tick)
+
+    def _cancel_fs_refresh(self):
+        if getattr(self, "_fs_after_id", None):
+            try:
+                self.after_cancel(self._fs_after_id)
+            except Exception:
+                pass
+            self._fs_after_id = None
+
+    def _fs_refresh_tick(self):
+        try:
+            sig = self._dir_signature()
+            if sig != self._dir_sig:
+                self._dir_sig = sig
+                self.refresh_file_panel(force=True)
+        finally:
+            self._schedule_fs_refresh()
 
     # ---------------- Rendering ----------------
 
-    def refresh_file_panel(self):
+    def refresh_file_panel(self, force: bool = False):
+        # ensure headings reflect current (also shows triangles)
         cols, heads = self._tree_columns()
         self.tree.configure(columns=cols)
 
@@ -570,15 +653,13 @@ class FilePanel:
                           command=lambda: self._on_heading_click("#0"))
         for c in ("name", "safe", "size", "modified", "mode"):
             if c in cols:
-                if c == "safe":
-                    self.tree.heading(c, text=heads.get(c, "!"), anchor="center")
-                else:
-                    self.tree.heading(c, text=self._sort_label_for(c),
-                                      command=lambda col=c: self._on_heading_click(col))
+                self.tree.heading(c, text=self._sort_label_for(c),
+                                  command=lambda col=c: self._on_heading_click(col),
+                                  anchor=("center" if c in ("safe",) else "w"))
 
         self._apply_fixed_widths()
 
-        cwd_changed = (self._last_cwd is None) or (self.cwd != self._last_cwd)
+        cwd_changed = (self._last_cwd is None) or (self.cwd != self._last_cwd) or force
         self._last_cwd = self.cwd
 
         selected_before = self._selected_path
@@ -605,7 +686,7 @@ class FilePanel:
 
         type_is_icon = self.col_type.get() and self._mime_enabled()
 
-        # Breadcrumbs
+        # Breadcrumbs (unsorted)
         for path, name in self._breadcrumb_items():
             meta = self._values_for_path(path)
             safe = self._tree_safety_icon(name)
@@ -628,7 +709,7 @@ class FilePanel:
                 iid = _ins(row_text, row_vals)
             self._node[iid] = {"path": path, "kind": "dir", "role": "breadcrumb"}
 
-        # Create New Folder
+        # Create New Folder (bold)
         img_new_folder = icon_for(None, "folder-new") if type_is_icon else None
         sep1_vals = [("=== Create New Folder ===" if dc == "name" else "") for dc in cols]
         sep1_text = "" if self.col_type.get() else "=== Create New Folder ==="
@@ -644,7 +725,6 @@ class FilePanel:
         dirs  = [e for e in entries if e.is_dir() and (show_hidden or not e.name.startswith("."))]
         files = [e for e in entries if e.is_file() and (show_hidden or not e.name.startswith("."))]
 
-        # Initial name sort on directory change; otherwise preserve current order ranks
         if cwd_changed:
             dirs  = sorted(dirs,  key=lambda p: p.name.lower())
             files = sorted(files, key=lambda p: p.name.lower())
@@ -678,7 +758,7 @@ class FilePanel:
                 iid = _ins(row_text, row_vals)
             self._node[iid] = {"path": d, "kind": "dir", "role": "cwd-dir"}
 
-        # Create New File
+        # Create New File (bold)
         img_new_file = icon_for(None, "document-new") if type_is_icon else None
         sep2_vals = [("=== Create New File ===" if dc == "name" else "") for dc in cols]
         sep2_text = "" if self.col_type.get() else "=== Create New File ==="
@@ -713,7 +793,7 @@ class FilePanel:
             self._select_path(selected_before)
         self._update_meta_safety_from_entry()
 
-    # ---------------- Selection & metadata ----------------
+    # ---------------- Selection & double-click ----------------
 
     def _on_tree_select(self, _evt):
         iid = self._first_selection()
@@ -738,7 +818,7 @@ class FilePanel:
         self._selected_path = None
         self._create_mode = what
         now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        mode = "0755" if what == "dir" else "0644"
+        mode = "rwxr-xr-x" if what == "dir" else "rw-r--r--"
         kind = "Folder" if what == "dir" else "File"
         size = "-" if what == "dir" else "0 B"
 
@@ -757,15 +837,130 @@ class FilePanel:
         self._update_meta_safety_from_entry()
         self.meta_filename.focus_set()
 
-    def _on_tree_double_click(self, _evt):
-        iid = self._first_selection()
-        if not iid:
+    def _on_tree_double_click(self, event):
+        """React only to double-clicks on actual rows.
+        - Files (role='cwd-file')  → open chooser
+        - Directories (breadcrumbs/cwd-dir) → cd into
+        - 'Create New …' rows → enter create mode
+        - Headings/separators/empty space → ignore
+        """
+        region = self.tree.identify_region(event.x, event.y)
+        if region not in ("tree", "cell"):  # ignore heading, separator, nothing
             return
-        info = self._node.get(iid)
-        if not info:
+
+        row_id = self.tree.identify_row(event.y)
+        if not row_id:
             return
-        if info.get("kind") == "dir":
-            self.set_cwd(info["path"])
+
+        info = self._node.get(row_id, {})
+        kind = info.get("kind")
+        role = info.get("role")
+        path = info.get("path")
+
+        # Only show the open dialog for files that live in the cwd list
+        if kind == "file" and role == "cwd-file" and path:
+            self._prompt_open_file(path)
+            return
+
+        # Navigate on directories (breadcrumbs or cwd)
+        if kind == "dir" and path and role in ("breadcrumb", "cwd-dir"):
+            self.set_cwd(path)
+            return
+
+        # “Create new …” rows
+        if kind == "create_file":
+            self._enter_create_mode("file")
+            return
+        if kind == "create_dir":
+            self._enter_create_mode("dir")
+            return
+
+        # Anything else: no-op
+
+    def _prompt_open_file(self, path: Path):
+        """Three-way chooser: Cancel, System Default (xdg-open), Zeropad editor."""
+        win = tk.Toplevel(self)
+        win.withdraw()  # build off-screen to avoid flicker
+        win.title("Open File")
+        win.configure(bg=self._BG_PANEL)
+        win.transient(self)  # keep above parent
+
+        # Content
+        tk.Label(
+            win,
+            text=f"Open:\n{path}",
+            bg=self._BG_PANEL,
+            fg=self._FG_TEXT,
+            justify="left"
+        ).pack(side="top", anchor="w", padx=12, pady=12)
+
+        btns = tk.Frame(win, bg=self._BG_PANEL)
+        btns.pack(side="top", fill="x", padx=12, pady=12)
+
+        def do_cancel():
+            try:
+                win.grab_release()
+            except Exception:
+                pass
+            win.destroy()
+
+        def do_system():
+            try:
+                subprocess.Popen(
+                    ["xdg-open", str(path)],
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL
+                )
+            except Exception as e:
+                messagebox.showerror("Open Failed", f"xdg-open error:\n{e}")
+            do_cancel()
+
+        def do_zeropad():
+            # Close dialog first (releases grab), then open the file in the next idle tick.
+            do_cancel()
+            # TextPanel provides open_with_zeropad(Path)
+            if hasattr(self, "open_with_zeropad"):
+                self.after_idle(lambda: self.open_with_zeropad(Path(path)))
+            else:
+                messagebox.showerror("Unavailable", "Open in Zeropad is not wired up in TextPanel.")
+
+        ttk.Button(btns, text="Cancel", style="Secondary.TButton", command=do_cancel).pack(side="right")
+        ttk.Button(btns, text="Open in Zeropad", style="Primary.TButton", command=do_zeropad)\
+            .pack(side="right", padx=(0, 8))
+        ttk.Button(btns, text="Open with System Default", style="Secondary.TButton", command=do_system)\
+            .pack(side="right", padx=(0, 8))
+
+        win.bind("<Escape>", lambda e: do_cancel())
+        win.protocol("WM_DELETE_WINDOW", do_cancel)
+
+        # Layout/center, then map & raise
+        win.update_idletasks()
+        try:
+            px, py = self.winfo_rootx(), self.winfo_rooty()
+            pw, ph = self.winfo_width(), self.winfo_height()
+            ww, wh = win.winfo_reqwidth(), win.winfo_reqheight()
+            x = px + max(0, (pw - ww) // 2)
+            y = py + max(0, (ph - wh) // 3)
+            win.geometry(f"+{x}+{y}")
+        except Exception:
+            pass
+
+        win.deiconify()
+        win.lift()
+
+        # Take grab only after the window is viewable
+        def _try_grab():
+            if win.winfo_viewable():
+                try:
+                    win.grab_set()
+                except Exception:
+                    win.after(10, _try_grab)
+            else:
+                win.after(10, _try_grab)
+
+        _try_grab()
+        win.focus_set()
+        win.wait_window()
 
     def _first_selection(self):
         sels = self.tree.selection()
@@ -794,7 +989,7 @@ class FilePanel:
         kind = "Folder" if p.is_dir() else "File"
         size = "-" if p.is_dir() else self._human_size(st.st_size)
         mtime_str = datetime.fromtimestamp(st.st_mtime).strftime("%Y-%m-%d %H:%M:%S")
-        mode_str = f"{stat.S_IMODE(st.st_mode):04o}"
+        mode_sym = self._mode_to_symbolic(st.st_mode, p.is_dir())
 
         self.meta_filename.delete(0, tk.END); self.meta_filename.insert(0, p.name)
         if self._mime_enabled():
@@ -809,9 +1004,9 @@ class FilePanel:
                 self.meta_kind_value.config(text=kind)
         self.meta_size.config(text=size)
         self.meta_modified.delete(0, tk.END); self.meta_modified.insert(0, mtime_str)
-        self.meta_mode.delete(0, tk.END);     self.meta_mode.insert(0, mode_str)
+        self.meta_mode.delete(0, tk.END);     self.meta_mode.insert(0, mode_sym)
 
-        self._meta_original = {"filename": p.name, "modified": mtime_str, "mode": mode_str}
+        self._meta_original = {"filename": p.name, "modified": mtime_str, "mode": mode_sym}
         self._create_mode = None
         self._set_accept_enabled(False)
         self._update_meta_safety_from_entry()
@@ -820,9 +1015,9 @@ class FilePanel:
         self._update_meta_safety_from_entry()
 
         if self._create_mode:
-            modified_ok = self._validate_datetime(self.meta_modified.get().strip())
-            mode_ok     = self._validate_mode(self.meta_mode.get().strip())
-            filename_nonempty = bool(self.meta_filename.get().strip())
+            modified_ok = self._validate_datetime(self.meta_modified.get().rstrip())
+            mode_ok     = self._validate_mode_symbolic(self.meta_mode.get().rstrip())
+            filename_nonempty = bool(self.meta_filename.get().rstrip())
             self._set_accept_enabled(filename_nonempty and modified_ok and mode_ok)
             return
 
@@ -844,20 +1039,21 @@ class FilePanel:
     # ---------------- Accept / Cancel / Delete ----------------
 
     def _on_accept(self):
+        # CREATE mode
         if self._create_mode:
-            name = self.meta_filename.get().strip()
+            name = self.meta_filename.get().rstrip()  # ONLY strip trailing spaces
             if not name:
                 messagebox.showerror("Invalid", "Please enter a filename or folder name.")
                 return
-            mod_str  = self.meta_modified.get().strip()
-            mode_str = self.meta_mode.get().strip()
+            mod_str  = self.meta_modified.get().rstrip()
+            mode_sym = self.meta_mode.get().rstrip()
 
             ok, mod_ts = self._parse_datetime(mod_str)
             if not ok:
                 messagebox.showerror("Invalid Modified", "Use format: YYYY-MM-DD HH:MM:SS"); return
-            ok, mode_val = self._parse_mode(mode_str)
+            ok, mode_val = self._parse_mode_symbolic(mode_sym)
             if not ok:
-                messagebox.showerror("Invalid Mode", "Enter an octal like 0644 or 755 (0–7777)."); return
+                messagebox.showerror("Invalid Mode", "Use symbolic like rwxr-xr-x (optional leading d)."); return
 
             try:
                 target = Path(name)
@@ -880,7 +1076,7 @@ class FilePanel:
             except Exception as e:
                 messagebox.showerror("Create Failed", f"Could not create:\n{e}"); return
 
-            self.refresh_file_panel()
+            self.refresh_file_panel(force=True)
             self._selected_path = target
             self._select_path(target)
             self._load_metadata_from_path(target)
@@ -888,24 +1084,25 @@ class FilePanel:
             self._set_accept_enabled(False)
             return
 
+        # EDIT mode
         if not self._selected_path:
             return
 
         src = self._selected_path
         was_cwd = (src == self.cwd)
-        new_name = self.meta_filename.get().strip()
+        new_name = self.meta_filename.get().rstrip()  # ONLY strip trailing
         if new_name == "":
             messagebox.showerror("Invalid", "Filename cannot be empty.")
             return
-        new_mtime_str = self.meta_modified.get().strip()
-        new_mode_str  = self.meta_mode.get().strip()
+        new_mtime_str = self.meta_modified.get().rstrip()
+        new_mode_sym  = self.meta_mode.get().rstrip()
 
         ok, new_mtime_ts = self._parse_datetime(new_mtime_str)
         if not ok:
             messagebox.showerror("Invalid Modified", "Use format: YYYY-MM-DD HH:MM:SS"); return
-        ok, mode_val = self._parse_mode(new_mode_str)
+        ok, mode_val = self._parse_mode_symbolic(new_mode_sym)
         if not ok:
-            messagebox.showerror("Invalid Mode", "Enter an octal like 0644 or 755 (0–7777)."); return
+            messagebox.showerror("Invalid Mode", "Use symbolic like rwxr-xr-x (optional leading d)."); return
 
         try:
             target = Path(new_name)
@@ -920,7 +1117,14 @@ class FilePanel:
 
         try:
             if do_rename:
+                old_path = src
                 src.rename(target)
+                # notify text editor so open tabs keep working
+                if hasattr(self, "on_path_renamed") and callable(getattr(self, "on_path_renamed")):
+                    try:
+                        self.on_path_renamed(old_path, target)
+                    except Exception:
+                        pass
                 src = target
                 self._selected_path = target
                 if was_cwd and target.is_dir():
@@ -933,7 +1137,7 @@ class FilePanel:
             messagebox.showerror("Apply Failed", f"Could not apply changes:\n{e}"); return
 
         if not was_cwd:
-            self.refresh_file_panel()
+            self.refresh_file_panel(force=True)
         self._selected_path = src
         self._select_path(src)
         self._load_metadata_from_path(src)
@@ -942,7 +1146,7 @@ class FilePanel:
     def _on_cancel(self):
         if self._create_mode:
             self._create_mode = None
-            self.refresh_file_panel()
+            self.refresh_file_panel(force=True)
             return
 
         if not self._selected_path:
@@ -975,7 +1179,7 @@ class FilePanel:
         if p == self.cwd:
             self.set_cwd(p.parent if p.parent.exists() else Path.home())
         else:
-            self.refresh_file_panel()
+            self.refresh_file_panel(force=True)
             self._selected_path = None
             self._set_accept_enabled(False)
 
@@ -1060,7 +1264,7 @@ class FilePanel:
             out["name"] = p.name
             out["size"] = "-" if is_dir else self._human_size(st.st_size)
             out["modified"] = datetime.fromtimestamp(st.st_mtime).strftime("%Y-%m-%d %H:%M:%S")
-            out["mode"] = f"{stat.S_IMODE(st.st_mode):04o}"
+            out["mode"] = self._mode_to_symbolic(st.st_mode, is_dir)
         except Exception:
             out["#0"] = "Folder" if p.is_dir() else "File"
             out["name"] = p.name
@@ -1087,23 +1291,71 @@ class FilePanel:
         except Exception:
             return False, None
 
-    @staticmethod
-    def _validate_mode(s: str) -> bool:
-        try:
-            cleaned = s.strip().lstrip("0") or "0"
-            v = int(cleaned, 8); return 0 <= v <= 0o7777
-        except Exception:
-            return False
+    # ----- rwx mode helpers (symbolic) -----
 
     @staticmethod
-    def _parse_mode(s: str):
-        try:
-            cleaned = s.strip().lstrip("0") or "0"
-            v = int(cleaned, 8)
-            if not (0 <= v <= 0o7777): return False, None
-            return True, v
-        except Exception:
+    def _mode_to_symbolic(mode: int, is_dir: bool) -> str:
+        # leading file type char
+        t = "d" if is_dir else "-"
+        perms = ""
+        for who in (stat.S_IRUSR, stat.S_IWUSR, stat.S_IXUSR,
+                    stat.S_IRGRP, stat.S_IWGRP, stat.S_IXGRP,
+                    stat.S_IROTH, stat.S_IWOTH, stat.S_IXOTH):
+            perms += (
+                "r" if (who in (stat.S_IRUSR, stat.S_IRGRP, stat.S_IROTH) and (mode & who)) else
+                "w" if (who in (stat.S_IWUSR, stat.S_IWGRP, stat.S_IWOTH) and (mode & who)) else
+                "x" if (who in (stat.S_IXUSR, stat.S_IXGRP, stat.S_IXOTH) and (mode & who)) else
+                "-"
+            )
+        # handle setuid/setgid/sticky
+        if mode & stat.S_ISUID:
+            perms = perms[:2] + ("s" if (mode & stat.S_IXUSR) else "S") + perms[3:]
+        if mode & stat.S_ISGID:
+            perms = perms[:5] + ("s" if (mode & stat.S_IXGRP) else "S") + perms[6:]
+        if mode & stat.S_ISVTX:
+            perms = perms[:8] + ("t" if (mode & stat.S_IXOTH) else "T") + perms[9:]
+        return t + perms
+
+    @staticmethod
+    def _validate_mode_symbolic(s: str) -> bool:
+        s = s.strip()
+        return bool(re.fullmatch(r"[d-]?[rwxstST-]{9}", s))
+
+    @staticmethod
+    def _parse_mode_symbolic(s: str):
+        s = s.strip()
+        if not FilePanel._validate_mode_symbolic(s):
             return False, None
+        if len(s) == 10:
+            s = s[1:]
+        # map chars
+        bits = 0
+        def setbit(cond, b):  # small helper
+            nonlocal bits
+            if cond: bits |= b
+
+        # user
+        setbit(s[0] in "r", stat.S_IRUSR)
+        setbit(s[1] in "w", stat.S_IWUSR)
+        ux = s[2]
+        setbit(ux in "xst", stat.S_IXUSR)
+        if ux in "sS": bits |= stat.S_ISUID
+
+        # group
+        setbit(s[3] in "r", stat.S_IRGRP)
+        setbit(s[4] in "w", stat.S_IWGRP)
+        gx = s[5]
+        setbit(gx in "xst", stat.S_IXGRP)
+        if gx in "sS": bits |= stat.S_ISGID
+
+        # other
+        setbit(s[6] in "r", stat.S_IROTH)
+        setbit(s[7] in "w", stat.S_IWOTH)
+        ox = s[8]
+        setbit(ox in "xtT", stat.S_IXOTH)
+        if ox in "tT": bits |= stat.S_ISVTX
+
+        return True, bits
 
     # ---------------- XDG icon + MIME helpers ----------------
 
@@ -1175,10 +1427,8 @@ class FilePanel:
             if mapping:
                 return mapping
         except Exception:
-            # Fall through to error below
             pass
 
-        # File existed but produced no usable mappings
         msg = (
             "'extensions.txt' was found but contained no valid mappings:\n\n"
             f"  {path}\n\n"
@@ -1200,7 +1450,6 @@ class FilePanel:
         except Exception:
             pass
         raise SystemExit(1)
-        
 
     def _guess_mime_for(self, path: Path) -> Tuple[Optional[str], Optional[str]]:
         # Cache lookup
