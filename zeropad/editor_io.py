@@ -388,7 +388,7 @@ def choose_open_selected(owner: tk.Misc, path: Path) -> str | None:
               background=[("active", BTN_BG_H)],
               foreground=[("disabled", "#9ca3af")])
 
-    tk.Label(win, text="Open selected file with:", bg=BG, fg=FG, anchor="w").pack(
+    tk.Label(win, text="You've selected the following file for opening:", bg=BG, fg=FG, anchor="w").pack(
         side="top", fill="x", padx=14, pady=(14, 6)
     )
     tk.Label(win, text=str(path), bg=BG, fg=FG, anchor="w", justify="left", wraplength=640).pack(
@@ -413,8 +413,8 @@ def choose_open_selected(owner: tk.Misc, path: Path) -> str | None:
     def on_zeropad():  choice.update(val="zeropad"); _close()
 
     ttk.Button(btns, text="Cancel", style="Dlg.TButton", command=on_cancel).pack(side="right")
-    ttk.Button(btns, text="Open in Zeropad", style="Dlg.TButton", command=on_zeropad).pack(side="right", padx=(0, 8))
     ttk.Button(btns, text="Open with System Default", style="Dlg.TButton", command=on_system).pack(side="right", padx=(0, 8))
+    ttk.Button(btns, text="Open in Zeropad", style="Dlg.TButton", command=on_zeropad).pack(side="right", padx=(0, 8))
 
     win.bind("<Escape>", lambda e: on_cancel())
     win.protocol("WM_DELETE_WINDOW", on_cancel)

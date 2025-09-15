@@ -97,7 +97,6 @@ class FilePanel:
     }
 
     # -----------------------------------------------------
-
     def init_file_panel(self):
         """Build the left File panel with three vertically stacked subpanels."""
         palette = getattr(self, "_palette", {})
@@ -123,25 +122,34 @@ class FilePanel:
         style = ttk.Style(self)
         style.configure("NoHover.TCheckbutton", background=self._BG_PANEL, foreground=self._FG_TEXT)
         style.map("NoHover.TCheckbutton",
-                  background=[("active", self._BG_PANEL), ("!disabled", self._BG_PANEL)],
-                  foreground=[("active", self._FG_TEXT), ("!disabled", self._FG_TEXT)])
+                background=[("active", self._BG_PANEL), ("!disabled", self._BG_PANEL)],
+                foreground=[("active", self._FG_TEXT), ("!disabled", self._FG_TEXT)])
 
         style.configure("Toolbar.TButton", background=self._BTN_BG, foreground=self._FG_TEXT,
                         borderwidth=0, padding=(8, 2))
         style.map("Toolbar.TButton",
-                  background=[("active", self._BTN_BG_H), ("disabled", self._BTN_BG_D)],
-                  foreground=[("disabled", self._FG_DIM)])
+                background=[("active", self._BTN_BG_H), ("disabled", self._BTN_BG_D)],
+                foreground=[("disabled", self._FG_DIM)])
 
+        # Icon-only toolbar buttons (square-ish)
+        style.configure("Icon.TButton",
+                        background=self._BTN_BG, foreground=self._FG_TEXT,
+                        borderwidth=0, padding=(6, 6))
+        style.map("Icon.TButton",
+                background=[("active", self._BTN_BG_H), ("disabled", self._BTN_BG_D)],
+                foreground=[("disabled", self._FG_DIM)])
+
+        # Make the four action buttons noticeably narrower
         style.configure("Primary.TButton", background=self._ACC_BG, foreground="#ffffff",
-                        borderwidth=0, padding=(10, 4))
+                        borderwidth=0, padding=(4, 2))
         style.map("Primary.TButton",
-                  background=[("active", self._ACC_BG_H), ("disabled", self._ACC_BG_D)],
-                  foreground=[("disabled", self._FG_DIM)])
+                background=[("active", self._ACC_BG_H), ("disabled", self._ACC_BG_D)],
+                foreground=[("disabled", self._FG_DIM)])
         style.configure("Secondary.TButton", background=self._BTN_BG, foreground=self._FG_TEXT,
-                        borderwidth=0, padding=(10, 4))
+                        borderwidth=0, padding=(4, 2))
         style.map("Secondary.TButton",
-                  background=[("active", self._BTN_BG_H)],
-                  foreground=[("disabled", self._FG_DIM)])
+                background=[("active", self._BTN_BG_H)],
+                foreground=[("disabled", self._FG_DIM)])
 
         style.configure("Treeview",
                         background=self._BG_PANEL, fieldbackground=self._BG_PANEL,
@@ -149,8 +157,8 @@ class FilePanel:
         style.configure("Treeview.Heading",
                         background=self._BTN_BG, foreground=self._FG_TEXT, relief="flat")
         style.map("Treeview.Heading",
-                  background=[("active", self._BTN_BG_H), ("pressed", self._BTN_BG_H)],
-                  foreground=[("active", self._FG_TEXT), ("pressed", self._FG_TEXT)])
+                background=[("active", self._BTN_BG_H), ("pressed", self._BTN_BG_H)],
+                foreground=[("active", self._FG_TEXT), ("pressed", self._FG_TEXT)])
 
         # ---------- Subpanel 1: toggles + nav ----------
         topbar = tk.Frame(self.fm, bg=self._BG_PANEL)
@@ -167,11 +175,16 @@ class FilePanel:
                         command=self._on_toggle_mime, style="NoHover.TCheckbutton",
                         takefocus=False).pack(side="left", padx=(0, 12), pady=6)
 
-        self.up_btn = ttk.Button(topbar, text="Up", style="Toolbar.TButton", command=self._go_up)
+        # Buttons for Up and Home
+        self.up_btn = ttk.Button(
+            topbar, text="↑ Up", style="Icon.TButton", width=5, command=self._go_up
+        )
         self.up_btn.pack(side="left", padx=(0, 6), pady=6)
 
-        self.home_btn = ttk.Button(topbar, text="Home", style="Toolbar.TButton",
-                                   command=lambda: self.set_cwd(Path.home()))
+        self.home_btn = ttk.Button(
+            topbar, text="⌂ Home", style="Icon.TButton", width=8,
+            command=lambda: self.set_cwd(Path.home())
+        )
         self.home_btn.pack(side="left", padx=(0, 8), pady=6)
 
         # ---------- Subpanel 2: Tree ----------
@@ -183,7 +196,7 @@ class FilePanel:
         # Bold font for "Create New" rows
         base = tkfont.nametofont("TkDefaultFont")
         self._bold_font = tkfont.Font(self, family=base.cget("family"),
-                                      size=base.cget("size"), weight="bold")
+                                    size=base.cget("size"), weight="bold")
         self.tree.tag_configure("bold", font=self._bold_font)
 
         # --- Width model storage ---
@@ -241,7 +254,7 @@ class FilePanel:
                         style="NoHover.TCheckbutton", takefocus=False, state="disabled").pack(anchor="w")
 
         self.meta_filename = tk.Entry(form, bg=self._BG_ENTRY, fg=self._FG_TEXT,
-                                      insertbackground=self._FG_TEXT, relief="flat")
+                                    insertbackground=self._FG_TEXT, relief="flat")
         self.meta_filename.grid(row=1, column=1, sticky="ew", pady=2)
 
         self.meta_fname_flag = tk.Label(form, text="🙂", bg=self._BG_PANEL, fg=self._FG_TEXT, cursor="hand2")
@@ -262,7 +275,7 @@ class FilePanel:
                         style="NoHover.TCheckbutton", takefocus=False)\
             .grid(row=3, column=0, sticky="w", padx=(0, 6))
         self.meta_modified = tk.Entry(form, bg=self._BG_ENTRY, fg=self._FG_TEXT,
-                                      insertbackground=self._FG_TEXT, relief="flat")
+                                    insertbackground=self._FG_TEXT, relief="flat")
         self.meta_modified.grid(row=3, column=1, sticky="ew", pady=2)
 
         # Row 4: Mode (symbolic rwx)
@@ -271,19 +284,23 @@ class FilePanel:
                         style="NoHover.TCheckbutton", takefocus=False)\
             .grid(row=4, column=0, sticky="w", padx=(0, 6))
         self.meta_mode = tk.Entry(form, bg=self._BG_ENTRY, fg=self._FG_TEXT,
-                                  insertbackground=self._FG_TEXT, relief="flat")
+                                insertbackground=self._FG_TEXT, relief="flat")
         self.meta_mode.grid(row=4, column=1, sticky="ew", pady=2)
 
-        # Buttons (Delete | Cancel | Accept)
+        # Buttons (Duplicate | Delete | Accept | Cancel)
         btns = tk.Frame(bottom, bg=self._BG_PANEL)
         btns.pack(side="top", fill="x", padx=8, pady=(0, 8))
-        self.accept_btn = ttk.Button(btns, text="Accept", command=self._on_accept, style="Primary.TButton")
-        self.cancel_btn = ttk.Button(btns, text="Cancel", command=self._on_cancel, style="Secondary.TButton")
-        self.delete_btn = ttk.Button(btns, text="Delete", command=self._on_delete, style="Secondary.TButton")
-        self.accept_btn.pack(side="right")
-        self.cancel_btn.pack(side="right", padx=(0, 8))
-        self.delete_btn.pack(side="left")
-        self._set_accept_enabled(False)
+        self.accept_btn    = ttk.Button(btns, text="Accept",    command=self._on_accept,    style="Primary.TButton", width=8)
+        self.cancel_btn    = ttk.Button(btns, text="Cancel",    command=self._on_cancel,    style="Secondary.TButton", width=8)
+        self.delete_btn    = ttk.Button(btns, text="Delete",    command=self._on_delete,    style="Secondary.TButton", width=8)
+        self.duplicate_btn = ttk.Button(btns, text="Duplicate", command=self._on_duplicate, style="Secondary.TButton", width=10)
+
+        # Right-justified group: Cancel (far right), Accept (to its left)
+        self.cancel_btn.pack(side="right")
+        self.accept_btn.pack(side="right", padx=(0, 8))
+        # Left-justified group: Duplicate (left of Delete)
+        self.duplicate_btn.pack(side="left")
+        self.delete_btn.pack(side="left", padx=(8, 0))
 
         # Selection & state
         self._selected_path: Path | None = None
@@ -308,6 +325,9 @@ class FilePanel:
         if not hasattr(self, "_cleanup_hooks"):
             self._cleanup_hooks = []
         self._cleanup_hooks.append(self._cancel_fs_refresh)
+
+        # Make sure Accept is disabled when nothing is selected and not creating
+        self._set_accept_enabled(False)
 
     # ---------------- MIME toggle & Row0 ----------------
 
@@ -602,19 +622,18 @@ class FilePanel:
             self._schedule_fs_refresh()
 
     # ---------------- Rendering ----------------
-
     def refresh_file_panel(self, force: bool = False):
         # ensure headings reflect current (also shows triangles)
         cols, heads = self._tree_columns()
         self.tree.configure(columns=cols)
 
         self.tree.heading("#0", text=self._sort_label_for("#0"), anchor="center",
-                          command=lambda: self._on_heading_click("#0"))
+                        command=lambda: self._on_heading_click("#0"))
         for c in ("name", "safe", "size", "modified", "mode"):
             if c in cols:
                 self.tree.heading(c, text=self._sort_label_for(c),
-                                  command=lambda col=c: self._on_heading_click(col),
-                                  anchor=("center" if c in ("safe",) else "w"))
+                                command=lambda col=c: self._on_heading_click(col),
+                                anchor=("center" if c in ("safe",) else "w"))
 
         self._apply_fixed_widths()
 
@@ -668,10 +687,11 @@ class FilePanel:
                 iid = _ins(row_text, row_vals)
             self._node[iid] = {"path": path, "kind": "dir", "role": "breadcrumb"}
 
-        # Create New Folder (bold)
+        # Create New Folder (bold, nicer label)
         img_new_folder = icon_for(None, "folder-new") if type_is_icon else None
-        sep1_vals = [("=== Create New Folder ===" if dc == "name" else "") for dc in cols]
-        sep1_text = "" if self.col_type.get() else "=== Create New Folder ==="
+        sep1_label = "＋ New Folder"
+        sep1_vals = [(sep1_label if dc == "name" else "") for dc in cols]
+        sep1_text = "" if self.col_type.get() else sep1_label
         sep1 = _ins(sep1_text, sep1_vals, img=(img_new_folder if type_is_icon else None), tags=("bold",))
         self._node[sep1] = {"path": None, "kind": "create_dir"}
 
@@ -717,10 +737,11 @@ class FilePanel:
                 iid = _ins(row_text, row_vals)
             self._node[iid] = {"path": d, "kind": "dir", "role": "cwd-dir"}
 
-        # Create New File (bold)
+        # Create New File (bold, nicer label)
         img_new_file = icon_for(None, "document-new") if type_is_icon else None
-        sep2_vals = [("=== Create New File ===" if dc == "name" else "") for dc in cols]
-        sep2_text = "" if self.col_type.get() else "=== Create New File ==="
+        sep2_label = "＋ New File"
+        sep2_vals = [(sep2_label if dc == "name" else "") for dc in cols]
+        sep2_text = "" if self.col_type.get() else sep2_label
         sep2 = _ins(sep2_text, sep2_vals, img=(img_new_file if type_is_icon else None), tags=("bold",))
         self._node[sep2] = {"path": None, "kind": "create_file"}
 
@@ -731,7 +752,7 @@ class FilePanel:
             if self.col_type.get():
                 if type_is_icon:
                     _mime, icon_name = self._guess_mime_for(f)
-                    img = self._load_icon_image(icon_name or "text-x-generic", size=16)
+                    img = self._load_icon_image(icon_name or "text-x-generic", 16)
                     row_text = ""
                     row_vals = [(f.name if dc == "name" else (safe if dc == "safe" else meta.get(dc, "")))
                                 for dc in cols]
@@ -748,8 +769,15 @@ class FilePanel:
             self._node[iid] = {"path": f, "kind": "file", "role": "cwd-file"}
 
         self._update_nav_buttons()
+
+        # Restore selection if we had one
         if selected_before is not None:
             self._select_path(selected_before)
+
+        # Ensure Accept is OFF when nothing is selected and not creating
+        if self.get_selected_path() is None and not getattr(self, "_create_mode", None):
+            self._set_accept_enabled(False)
+
         self._update_meta_safety_from_entry()
 
     # ---------------- Selection & double-click ----------------
@@ -1655,3 +1683,38 @@ class FilePanel:
 
         cache[icon_name] = None
         return None
+
+    def _on_duplicate(self):
+        """Duplicate the selected file/folder next to it with a safe suffix."""
+        import shutil
+        src = self.get_selected_path()
+        if not src:
+            messagebox.showinfo("Duplicate", "No item selected.")
+            return
+        base = src.stem if src.is_file() else src.name
+        suffix = src.suffix if src.is_file() else ""
+        parent = src.parent
+
+        def candidate(i: int) -> Path:
+            tag = " copy" if i == 1 else f" copy {i}"
+            return parent / f"{base}{tag}{suffix}"
+
+        i = 1
+        dst = candidate(i)
+        while dst.exists():
+            i += 1
+            dst = candidate(i)
+
+        try:
+            if src.is_dir():
+                shutil.copytree(src, dst)
+            else:
+                shutil.copy2(src, dst)
+        except Exception as e:
+            messagebox.showerror("Duplicate Failed", f"Could not duplicate:\n{e}")
+            return
+
+        self.refresh_file_panel(force=True)
+        self._selected_path = dst
+        self._select_path(dst)
+        self._load_metadata_from_path(dst)
