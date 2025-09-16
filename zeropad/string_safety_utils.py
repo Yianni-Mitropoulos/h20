@@ -1,6 +1,7 @@
 from typing import List, Tuple, Optional, Dict, Any
 import unicodedata
 import regex as re  # pip install regex
+import os
 
 # ------------------------------ helpers ------------------------------------
 
@@ -9,30 +10,67 @@ def _combining(ch: str) -> int:
 
 def _is_ctrl(ch: str) -> bool:
     c = ord(ch)
-    return c < 0x20 or c == 0x7F
+    # Tabs are allowed; not treated as control chars
+    return (c < 0x20 and c not in (0x09,)) or c == 0x7F
 
 def _nfkc_once(s: str) -> str:
     return s if unicodedata.is_normalized("NFKC", s) else unicodedata.normalize("NFKC", s)
 
-# ------------------------ confusables (broad map) --------------------------
+# ---------------------- confusables (Unicode skeleton) ---------------------
 
-CONFUSABLES_XSCRIPT: Dict[str, str] = {
-    # Cyrillic (upper)
-    "А":"A","В":"B","Е":"E","К":"K","М":"M","Н":"H","О":"O","Р":"P","С":"C","Т":"T","У":"Y","Х":"X",
-    "І":"I","Ј":"J","Ѕ":"S","Ъ":"b","Ь":"b","Ґ":"G",
-    # Cyrillic (lower)
-    "а":"a","е":"e","о":"o","р":"p","с":"c","у":"y","х":"x","і":"i","ј":"j","ѕ":"s","ё":"e","ӏ":"l","Ӏ":"I",
-    # Greek (upper)
-    "Α":"A","Β":"B","Ε":"E","Ζ":"Z","Η":"H","Ι":"I","Κ":"K","Μ":"M","Ν":"N","Ο":"O","Ρ":"P","Τ":"T","Υ":"Y","Χ":"X",
-    # Greek (lower) — conservative
-    "ο":"o","ρ":"p","τ":"t","υ":"y","χ":"x","ι":"i","κ":"k","ν":"v","ε":"e","σ":"s",
-    # Modifier/letterlikes/roman numerals
-    "ˡ":"l","ᵢ":"i","ᵣ":"r","ᵤ":"u","ᵥ":"v","ᵇ":"b","ᵈ":"d","ᵍ":"g","ʰ":"h","ʲ":"j","ʳ":"r","ʷ":"w","ʸ":"y",
-    "ʟ":"L","ɩ":"i","ɪ":"I","Ɩ":"I","ɫ":"l","ℓ":"l","ʋ":"v","ʏ":"Y","Ɔ":"C","ⅽ":"c","ⅰ":"i","ⅱ":"ii","ⅲ":"iii",
-    "Ⅰ":"I","Ⅱ":"II","Ⅲ":"III","Ⅳ":"IV","Ⅴ":"V","Ⅵ":"VI","Ⅶ":"VII","Ⅷ":"VIII","Ⅸ":"IX","Ⅹ":"X",
-}
+_CONFUSABLES_MAP: Optional[Dict[str, str]] = None
+
+def _load_confusables_map() -> Dict[str, str]:
+    """
+    Load mappings from confusables-minified.txt located in the same directory
+    as this script. Each line has the form:
+        <src> ; <dst> ; <status>
+    """
+    global _CONFUSABLES_MAP
+    if _CONFUSABLES_MAP is not None:
+        return _CONFUSABLES_MAP
+
+    here = os.path.dirname(os.path.abspath(__file__))
+    path = os.path.join(here, "confusables-minified.txt")
+    mapping: Dict[str, str] = {}
+
+    with open(path, encoding="utf-8") as f:
+        for line in f:
+            line = line.strip()
+            if not line or line.startswith("#"):
+                continue
+            parts = [p.strip() for p in line.split(";")]
+            if len(parts) < 2:
+                continue
+            src_hex, dst_hex = parts[0], parts[1]
+            src = "".join(chr(int(cp, 16)) for cp in src_hex.split())
+            dst = "".join(chr(int(cp, 16)) for cp in dst_hex.split())
+            mapping[src] = dst
+
+    _CONFUSABLES_MAP = mapping
+    return mapping
+
 def _apply_confusables(s: str) -> str:
-    return "".join(CONFUSABLES_XSCRIPT.get(ch, ch) for ch in s)
+    """
+    Apply Unicode confusables skeleton mapping (after NFKC).
+    Longest-match-first up to 4 codepoints.
+    """
+    mapping = _load_confusables_map()
+    out = []
+    i = 0
+    while i < len(s):
+        matched = False
+        for j in range(min(4, len(s) - i), 0, -1):
+            sub = s[i:i+j]
+            if sub in mapping:
+                out.append(mapping[sub])
+                i += j
+                matched = True
+                break
+        if not matched:
+            out.append(s[i])
+            i += 1
+    return "".join(out)
 
 # ======================= deceptive lines (check/sanitize) ===================
 
@@ -111,26 +149,32 @@ def deceptive_line_check(s: str, low_aggression: bool = True) -> List[Tuple[int,
     if not low_aggression:
         mapped = _apply_confusables(_nfkc_once(slice_))
         if mapped != slice_:
-            issues.append((0, "Confusables/normalization: would be normalized (NFKC + cross-script mapping)"))
+            issues.append((0, "Confusables/normalization: would be normalized (NFKC + confusables skeleton)"))
 
     return issues
 
 
-def deceptive_line_sanitize(s: str, low_aggression: bool = True) -> Optional[str]:
+def deceptive_line_sanitize(
+    s: str,
+    low_aggression: bool = True,
+    prefer_silent_removal: bool = False,
+) -> Optional[str]:
     """
     Sanitize a single line (grapheme-aware).
-    - If LF/CR present: truncate at first and append EOL/CR.
+    - If LF/CR present: truncate at first and append EOL/CR (or drop marker if prefer_silent_removal).
     - Replace/annotate BiDi controls, solitary ZWJ/ZWNJ, invisibles, special spaces,
       dangling combining marks, solitary VS. Keep legitimate grapheme clusters intact.
-    - If low_aggression is False, apply NFKC + cross-script confusables mapping (silent).
+    - If low_aggression is False, apply NFKC + confusables skeleton mapping (silent).
+    - If prefer_silent_removal is True, remove problematic codepoints instead of inserting tokens,
+      but prefer sensible single-char substitutes (e.g., special spaces → ' ').
     Returns None if no changes; else the new string.
     """
     # Truncate at EOL/CR
     lf = s.find("\n"); cr = s.find("\r")
     if lf != -1 and (cr == -1 or lf < cr):
-        return s[:lf] + "EOL"
+        return s[:lf] if prefer_silent_removal else (s[:lf] + "EOL")
     if cr != -1:
-        return s[:cr] + "CR"
+        return s[:cr] if prefer_silent_removal else (s[:cr] + "CR")
 
     changed = False
     out_parts: List[str] = []
@@ -146,32 +190,42 @@ def deceptive_line_sanitize(s: str, low_aggression: bool = True) -> Optional[str
     for m in re.finditer(r"\X", s):
         cluster = m.group(0)
 
-        # Replace ASCII controls
+        # Replace/Remove ASCII controls in cluster
         if any(_is_ctrl(ch) for ch in cluster):
-            new = "".join("CTRL" if _is_ctrl(ch) else ch for ch in cluster)
+            if prefer_silent_removal:
+                new = "".join(ch for ch in cluster if not _is_ctrl(ch))
+            else:
+                new = "".join("CTRL" if _is_ctrl(ch) else ch for ch in cluster)
             if new != cluster:
                 changed = True; out_parts.append(new); continue
 
-        # Replace BiDi controls
+        # Replace/Remove BiDi controls in cluster
         if any(ch in bidi_controls for ch in cluster):
-            new = "".join("BIDI" if ch in bidi_controls else ch for ch in cluster)
+            if prefer_silent_removal:
+                new = "".join(ch for ch in cluster if ch not in bidi_controls)
+            else:
+                new = "".join("BIDI" if ch in bidi_controls else ch for ch in cluster)
             changed = True; out_parts.append(new); continue
 
         # Solitary joiners
         if cluster == "\u200D":
-            out_parts.append("ZWJ"); changed = True; continue
+            out_parts.append("" if prefer_silent_removal else "ZWJ"); changed = True; continue
         if cluster == "\u200C":
-            out_parts.append("ZWNJ"); changed = True; continue
+            out_parts.append("" if prefer_silent_removal else "ZWNJ"); changed = True; continue
 
         # Invisibles & special spaces (per codepoint)
         rep = False; tmp = []
         for ch in cluster:
             if ch in inv_tok:
-                tmp.append(inv_tok[ch]); rep = True
+                if prefer_silent_removal:
+                    rep = True  # drop it
+                    # don't append anything
+                else:
+                    tmp.append(inv_tok[ch]); rep = True
             else:
-                token = space_tok.get(ch)
-                if token:
-                    tmp.append(token); rep = True
+                if ch in space_tok:
+                    # single-char sensible substitute: replace with regular space
+                    tmp.append(" "); rep = True; changed = True
                 else:
                     tmp.append(ch)
         if rep:
@@ -179,11 +233,15 @@ def deceptive_line_sanitize(s: str, low_aggression: bool = True) -> Optional[str
 
         # Dangling combining mark
         if _combining(cluster[0]) != 0:
-            out_parts.append("CM" + cluster[1:]); changed = True; continue
+            if prefer_silent_removal:
+                out_parts.append(cluster[1:])  # drop unattached combining mark
+            else:
+                out_parts.append("CM" + cluster[1:])
+            changed = True; continue
 
         # Solitary VS
         if len(cluster) == 1 and 0xFE00 <= ord(cluster) <= 0xFE0F:
-            out_parts.append("VS"); changed = True; continue
+            out_parts.append("" if prefer_silent_removal else "VS"); changed = True; continue
 
         out_parts.append(cluster)
 
@@ -204,8 +262,7 @@ FNAME_MARK = {
     "SLASH":"SLASH","DOTSLASH":"DOTSLASH","DOTDOTSLASH":"DOTDOTSLASH","WS":"WS","EOL":"EOL","CR":"CR"
 }
 
-# Checker messages for dangerous ASCII anywhere (always + contextual)
-# NOTE (2025): Raw ASCII spaces are accepted and NOT flagged.
+# Treat all hazards equally
 ASCII_HAZARDS_ANYWHERE: Dict[str, str] = {
     "*": "Dangerous char: '*' glob expansion",
     "?": "Dangerous char: '?' single-char glob",
@@ -222,50 +279,47 @@ ASCII_HAZARDS_ANYWHERE: Dict[str, str] = {
     ";": "Dangerous char: command separator",
     "!": "Dangerous char: history expansion in some shells",
     "#": "Dangerous char: comment leader in scripts",
-    ":": "Dangerous contextual char: remote/path separator in scp/rsync/URLs",
-    "~": "Dangerous contextual char: home expansion",
-    "$": "Dangerous contextual char: variable expansion",
-    "%": "Dangerous contextual char: printf/format contexts",
-    ",": "Dangerous contextual char: CSV/arg parsing contexts",
-    "@": "Dangerous contextual char: host/user separators in tools",
+    ":": "Dangerous char: colon may be path/URL separator",
+    "~": "Dangerous char: home expansion",
+    "$": "Dangerous char: variable expansion",
+    "%": "Dangerous char: formatting/printf contexts",
+    ",": "Dangerous char: CSV/arg parsing contexts",
+    "@": "Dangerous char: host/user separators",
     "/": "Illegal in POSIX filenames: path separator",
 }
 
-# Replacements (sanitizer). NOTE: no mapping for space anymore.
-TOKENS_ALWAYS = {
+# Single replacement table used for ALL hazards above
+TOKENS: Dict[str, str] = {
     "*":"STAR","?":"QMARK","[":"LBRACK","]":"RBRACK",
     "'":"SQUOTE",'"':"DQUOTE","`":"BQUOTE","\\":"BSLASH",
     "<":"LT",">":"GT","|":"PIPE","&":"AMP",";":"SEMI","!":"EXCL","#":"HASH",
+    ":":"COLON","~":"TILDE","$":"DOLLAR","%":"PERCENT",",":"COMMA","@":"AT",
     "/":"SLASH",
 }
-TOKENS_CONTEXTUAL = { ":":"COLON","~":"TILDE","$":"DOLLAR","%":"PERCENT",",":"COMMA","@":"AT" }
 
-# Start-of-name rules (lone leading '.' preserved; no leading whitespace rule)
+# Start-of-name rules
 StartRule = Dict[str, Any]
 START_RULES: List[StartRule] = [
     {
         "name": "exact-dotdot",
         "match_len": lambda s: 2 if s == ".." else 0,
         "check_msg": "Exact '..': refers to parent directory",
-        "sanitize": lambda s, m: "DOTDOT",
+        # sanitize handled in _apply_start_rules_for_sanitize based on prefer_silent_removal
     },
     {
         "name": "prefix-dotdotslash",
         "match_len": lambda s: 3 if s.startswith("../") else 0,
         "check_msg": "Starts with '../': parent-relative path",
-        "sanitize": lambda s, m: FNAME_MARK["DOTDOTSLASH"] + s[m:],
     },
     {
         "name": "prefix-dotslash",
         "match_len": lambda s: 2 if s.startswith("./") else 0,
         "check_msg": "Starts with './': relative path prefix",
-        "sanitize": lambda s, m: FNAME_MARK["DOTSLASH"] + s[m:],
     },
     {
         "name": "prefix-slash",
         "match_len": lambda s: 1 if s.startswith("/") else 0,
         "check_msg": "Starts with '/': absolute path, not a bare filename",
-        "sanitize": lambda s, m: FNAME_MARK["SLASH"] + s[m:],
     },
 ]
 
@@ -277,14 +331,37 @@ def _apply_start_rules_for_check(name: str) -> List[Tuple[int, str]]:
             issues.append((0, rule["check_msg"]))
     return issues
 
-def _apply_start_rules_for_sanitize(name: str) -> Optional[str]:
-    out = name; changed = False
-    for rule in START_RULES:
-        m = rule["match_len"](out)
-        if m:
-            new_val = rule["sanitize"](out, m)
-            if new_val is not None and new_val != out:
-                out = new_val; changed = True
+def _apply_start_rules_for_sanitize(name: str, prefer_silent_removal: bool) -> Optional[str]:
+    """
+    Apply start rules:
+      - If prefer_silent_removal is True, *remove* the dangerous prefix (e.g., '../', './', '/'),
+        or drop '..' entirely.
+      - Otherwise, replace with explicit markers (DOTDOTSLASH, DOTSLASH, SLASH, DOTDOT).
+    """
+    out = name
+    changed = False
+
+    # exact '..'
+    if out == "..":
+        out = "" if prefer_silent_removal else "DOTDOT"
+        changed = True
+        return out
+
+    # '../'
+    if out.startswith("../"):
+        out = out[3:] if prefer_silent_removal else (FNAME_MARK["DOTDOTSLASH"] + out[3:])
+        changed = True
+
+    # './'
+    if out.startswith("./"):
+        out = out[2:] if prefer_silent_removal else (FNAME_MARK["DOTSLASH"] + out[2:])
+        changed = True
+
+    # leading '/'
+    if out.startswith("/"):
+        out = out[1:] if prefer_silent_removal else (FNAME_MARK["SLASH"] + out[1:])
+        changed = True
+
     return out if changed else None
 
 # ------------------------------- checker -----------------------------------
@@ -320,37 +397,46 @@ def bad_filename_check(name: str) -> List[Tuple[int, str]]:
 
 # ------------------------------ sanitizer ----------------------------------
 
-def bad_filename_sanitize(name: str) -> Optional[str]:
+def bad_filename_sanitize(
+    name: str,
+    prefer_silent_removal: bool = False,
+) -> Optional[str]:
     """
     Sanitize filename using start rules, LF/CR truncation, and ASCII replacements.
-    - At LF/CR: truncate at first and append EOL/CR token.
+    - At LF/CR: truncate at first and append EOL/CR token, or drop marker if prefer_silent_removal.
     - Apply start rules (lone '.' untouched).
-    - Replace ALL dangerous ASCII anywhere (space is allowed), including '/' -> 'SLASH'.
+    - Replace ALL dangerous ASCII anywhere (space is allowed):
+        * If prefer_silent_removal is False -> replace using TOKENS (e.g., '/' -> 'SLASH').
+        * If prefer_silent_removal is True  -> remove the hazardous character entirely.
+      (There is no good single-char substitute for these in filenames.)
     - If name is empty, DO NOT sanitize (return None).
-    Returns None if no changes; otherwise the new name.
+    Returns None if no changes; otherwise the new name (may be empty string if everything was removed).
     """
     if name == "":
         return None  # empty is allowed; no auto-sanitize
 
     lf = name.find("\n"); cr = name.find("\r")
     if lf != -1 and (cr == -1 or lf < cr):
-        return name[:lf] + FNAME_MARK["EOL"]
+        return name[:lf] if prefer_silent_removal else (name[:lf] + FNAME_MARK["EOL"])
     if cr != -1:
-        return name[:cr] + FNAME_MARK["CR"]
+        return name[:cr] if prefer_silent_removal else (name[:cr] + FNAME_MARK["CR"])
 
     changed = False
     out = name
 
-    repl = _apply_start_rules_for_sanitize(out)
+    repl = _apply_start_rules_for_sanitize(out, prefer_silent_removal)
     if repl is not None:
         out = repl; changed = True
 
     parts: List[str] = []
     for ch in out:
-        if ch in TOKENS_ALWAYS:
-            parts.append(TOKENS_ALWAYS[ch]); changed = True
-        elif ch in TOKENS_CONTEXTUAL:
-            parts.append(TOKENS_CONTEXTUAL[ch]); changed = True
+        if ch in TOKENS:
+            if prefer_silent_removal:
+                # drop the hazardous char
+                changed = True
+                continue
+            else:
+                parts.append(TOKENS[ch]); changed = True
         else:
             parts.append(ch)
 
