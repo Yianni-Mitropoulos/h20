@@ -2,24 +2,14 @@
 from __future__ import annotations
 import time
 from pathlib import Path
-from typing import Dict, Optional
+from typing import Dict, Optional, List, Tuple, Set
 
 import tkinter as tk
 import tkinter.font as tkfont
 from tkinter import ttk, messagebox, filedialog
 
-# line safety (per line, aggressive)
-from string_safety_utils import deceptive_line_check, deceptive_line_sanitize
-
-# editor I/O helpers (encoding detection & save plumbing)
-from editor_io import (
-    prompt_open_with_encoding,                     # (owner, path) -> (encoding, errors, add_bom)
-    read_text_bytes, decode_bytes,                # bytes <-> text
-    encode_text, save_to_path,                    # (text, encoding, add_bom=False) -> bytes
-    prompt_save_as_with_encoding,                 # (owner, suggest_path, suggest_enc, suggest_bom) -> (path, encoding, errors, add_bom) | None
-    encode_text_inline,                           # (owner, text, default_encoding) -> (data, final_encoding)
-    suggest_open_encoding,                        # path -> encoding str
-)
+from basic_string_safety_utils import suspicious_line, exists_outside_printable_ascii_plane
+from editor_io import *
 
 # =========================
 # Palette / Theme Constants
@@ -29,23 +19,32 @@ DARK_PANEL   = "#111827"
 DARK_PANEL_2 = "#0f172a"
 FG_TEXT      = "#e5e7eb"
 FG_DIM       = "#9ca3af"
+FG_WARN      = "#ef4444"
+FG_OK        = "#34d399"
 
 SAFE_FACE_BAD = "😡"
+SAFE_FACE_MED = "😐"
+SAFE_FACE_OK  = "🙂"
 
 # Repaint throttles
 REPAINT_FAST_MS = 60
 REPAINT_SLOW_MS = 140
 REPAINT_HUGE_MS = 260
 
+# Injectivity recompute minima (heavier O(n) work)
+INJ_MIN_INTERVAL_SMALL = 0.30   # seconds (small/medium files)
+INJ_MIN_INTERVAL_MED   = 0.80
+INJ_MIN_INTERVAL_LARGE = 1.60
+
 
 class TextPanel:
     """
     Dark-themed, tabbed text editor panel with:
-      • Fixed “+” tab (index 0) to create new tabs.
-      • Line-number and safety gutters (flags suspicious characters per line).
-      • Status bar with path[*], cursor position, total lines, encoding.
-      • File actions: new/open/save/save-as/revert/close/select-all,
-        plus “open selected” and “save over selected” integrated with a sibling File panel.
+    • Fixed “+” tab (index 0) to create new tabs.
+    • Line-number and safety gutters (flags suspicious characters per line).
+    • Status bar with path[*], cursor position, total lines, encoding.
+    • File actions: new/open/save/save-as/revert/close/select-all, plus
+        “open selected” and “save over selected”.
     """
 
     # Public API expected on the app/toplevel:
@@ -122,7 +121,7 @@ class TextPanel:
         )
         self._status_path.pack(side="left", fill="x", expand=True)
 
-        # Status: right info
+        # Status: right info (line/col | total lines | encoding)
         self._status_info = tk.Label(
             self._status, text="", bg=DARK_PANEL_2, fg=FG_DIM, padx=8
         )
@@ -214,6 +213,10 @@ class TextPanel:
         # Auto-create a new tab if the '+' tab is selected
         if self._nb.select() == str(self._plus_tab):
             self._create_empty_tab_and_select()
+        # Repaint gutters promptly
+        tab = self._current_tab()
+        if tab:
+            self._schedule_draw_gutters(id(tab["frame"]), fast=True)
 
     def _close_current_tab(self):
         cur = self._nb.select()
@@ -260,6 +263,51 @@ class TextPanel:
     # Status / gutters / activity
     # =====================================================================
 
+    def _draw_gutters(self, tid: int):
+        tab = self._tabs.get(tid)
+        if not tab:
+            return
+        ln: tk.Canvas = tab["ln"]
+        face: tk.Canvas = tab["face"]
+        txt: tk.Text = tab["text"]
+
+        ln.delete("all")
+        face.delete("all")
+
+        # Visible line range
+        first_idx = txt.index("@0,0")
+        last_idx = txt.index(f"@0,{txt.winfo_height()}")
+        first_line = int(first_idx.split(".")[0])
+        last_line = max(first_line, int(last_idx.split(".")[0]))
+
+        # Font to pass to suspicious_line (Tk font object)
+        try:
+            tk_font = tkfont.Font(font=txt["font"])
+        except Exception:
+            tk_font = tkfont.nametofont("TkFixedFont")
+
+        for line_no in range(first_line, last_line + 1):
+            dline = txt.dlineinfo(f"{line_no}.0")
+            if not dline:
+                continue
+            y = dline[1]
+
+            # Line number (right aligned)
+            ln.create_text(44, y, anchor="ne", fill=FG_DIM, text=str(line_no))
+
+            # Safety face
+            text_line = txt.get(f"{line_no}.0", f"{line_no}.end")
+            face_char = self._line_face_for(text_line, tk_font)
+
+            if face_char != SAFE_FACE_OK:
+                fill = FG_WARN if face_char == SAFE_FACE_BAD else FG_DIM
+                face.create_text(9, y, anchor="n", fill=fill, text=face_char, tags=("face", f"line-{line_no}"))
+
+        # Click handling
+        def click_cb(ev):
+            self._on_face_click(tid, ev)
+        face.tag_bind("face", "<Button-1>", click_cb)
+
     def _on_text_activity(self, tid: int):
         tab = self._tabs.get(tid)
         if not tab:
@@ -287,7 +335,6 @@ class TextPanel:
         txt: tk.Text = tab["text"]
 
         # Estimate size to scale repaint frequency
-        # Use len(text) as proxy to avoid repeated UTF-8 encodes on every keystroke.
         size_chars = len(txt.get("1.0", "end-1c"))
         if size_chars > 1_000_000:
             delay = REPAINT_HUGE_MS
@@ -302,52 +349,33 @@ class TextPanel:
             self.after_cancel(tab["repaint_due"])
         tab["repaint_due"] = self.after(delay, lambda t=tid: self._draw_gutters(t))
 
-    def _draw_gutters(self, tid: int):
-        tab = self._tabs.get(tid)
-        if not tab:
-            return
-        ln: tk.Canvas = tab["ln"]
-        face: tk.Canvas = tab["face"]
-        txt: tk.Text = tab["text"]
-
-        ln.delete("all")
-        face.delete("all")
-
-        # Visible line range
-        first_idx = txt.index("@0,0")
-        last_idx = txt.index(f"@0,{txt.winfo_height()}")
-        first_line = int(first_idx.split(".")[0])
-        last_line = max(first_line, int(last_idx.split(".")[0]))
-
-        # Font metrics
+    def _line_face_for(self, text_line: str, tk_font: tkfont.Font) -> str:
+        """
+        Minimal rules:
+        - suspicious_line(...) -> 😡
+        - elif exists_outside_printable_ascii_plane(...) -> 😐
+        - else -> 🙂
+        """
         try:
-            fh = tkfont.Font(font=txt["font"]).metrics("linespace")
+            if suspicious_line(text_line, tk_font):
+                return SAFE_FACE_BAD
         except Exception:
-            fh = 15  # fallback metric only; not an API fallback
+            return SAFE_FACE_MED
 
-        for line_no in range(first_line, last_line + 1):
-            dline = txt.dlineinfo(f"{line_no}.0")
-            if not dline:
-                continue
-            y = dline[1]
-            # Line number (right aligned)
-            ln.create_text(44, y, anchor="ne", fill=FG_DIM, text=str(line_no))
-            # Safety face
-            text_line = txt.get(f"{line_no}.0", f"{line_no}.end")
-            issues = deceptive_line_check(text_line, low_aggression=False)
-            if issues:
-                # Centered in 18px gutter
-                face.create_text(
-                    9, y, anchor="n", fill="#ef4444", text=SAFE_FACE_BAD, tags=(f"line-{line_no}",)
-                )
+        try:
+            if exists_outside_printable_ascii_plane(text_line):
+                return SAFE_FACE_MED
+        except Exception:
+            return SAFE_FACE_MED
 
-        # Click handling (clicking anywhere in the face gutter will resolve the line)
-        def click_cb(ev):
-            self._on_face_click(tid, ev)
+        return SAFE_FACE_OK
 
-        face.tag_bind("all", "<Button-1>", click_cb)
+    # ========== Line Sanitize Dialog (selective) ==========
 
     def _on_face_click(self, tid: int, event):
+        """
+        Clicking the face opens a simple explanatory dialog.
+        """
         tab = self._tabs.get(tid)
         if not tab:
             return
@@ -355,26 +383,201 @@ class TextPanel:
         index = txt.index(f"@0,{event.y}")
         line_no = int(index.split(".")[0])
         line_text = txt.get(f"{line_no}.0", f"{line_no}.end")
-        issues = deceptive_line_check(line_text, low_aggression=False)
-        if not issues:
-            return
-        msg = (
-            "This line contains potentially deceptive characters:\n\n- "
-            + "\n- ".join(m for _, m in issues)
-            + "\n\nSanitize this line?"
+
+        try:
+            tk_font = tkfont.Font(font=txt["font"])
+        except Exception:
+            tk_font = tkfont.nametofont("TkFixedFont")
+        face_char = self._line_face_for(line_text, tk_font)
+
+        # ↓↓↓ pass tid so the dialog can find the right Text widget/tab
+        self._open_face_legend_dialog(tid, line_no)
+
+    def _bucketize_issues(self, line_text: str, issues: List[Tuple[int, str]]) -> Dict[str, List[Tuple[int, str]]]:
+        """
+        Group issues into coarse categories the user can act on individually:
+          - 'url'    : URL-related
+          - 'email'  : Email-related
+          - 'other'  : Controls/ignorable/bidi/etc.
+        """
+        buckets: Dict[str, List[Tuple[int, str]]] = {"url": [], "email": [], "other": []}
+        for off, msg in issues:
+            lower = msg.lower()
+            if "url" in lower or "idn" in lower or "punycode" in lower:
+                buckets["url"].append((off, msg))
+            elif "email" in lower:
+                buckets["email"].append((off, msg))
+            else:
+                buckets["other"].append((off, msg))
+        # If heuristic mis-buckets (rare), still safe—the sanitize toggles correspond to our selective paths
+        return buckets
+
+    def _line_issue_dialog(self, line_no: int, text: str, buckets: Dict[str, List[Tuple[int, str]]]) -> Optional[Dict[str, bool]]:
+        """
+        Present a dialog listing issues and checkboxes for which categories to sanitize.
+        Returns {'url': bool, 'email': bool, 'other': bool} or None if cancelled.
+        """
+        win = tk.Toplevel(self)
+        win.withdraw()
+        win.title(f"Line {line_no} — Issues")
+        win.configure(bg=DARK_PANEL)
+        win.transient(self)
+        win.grab_set()
+
+        # Header
+        tk.Label(win, text=f"Line {line_no} issues:", bg=DARK_PANEL, fg=FG_TEXT, anchor="w").pack(fill="x", padx=14, pady=(14, 6))
+
+        # Issues list
+        frame = tk.Frame(win, bg=DARK_PANEL)
+        frame.pack(fill="both", expand=True, padx=14, pady=(0, 8))
+
+        def add_bucket(title: str, items: List[Tuple[int, str]]):
+            lab = tk.Label(frame, text=title, bg=DARK_PANEL, fg=FG_TEXT, anchor="w")
+            lab.pack(fill="x", pady=(8, 2))
+            if not items:
+                tk.Label(frame, text="(none)", bg=DARK_PANEL, fg=FG_DIM, anchor="w").pack(fill="x")
+            else:
+                box = tk.Listbox(frame, height=min(6, max(1, len(items))), bg="#0b1220", fg=FG_TEXT, activestyle="none", highlightthickness=0, relief="flat")
+                for off, msg in items:
+                    box.insert("end", f"{off}: {msg}")
+                box.pack(fill="x")
+
+        add_bucket("URL-related:", buckets.get("url", []))
+        add_bucket("Email-related:", buckets.get("email", []))
+        add_bucket("Other (controls/ignorable/bidi):", buckets.get("other", []))
+
+        # Checkboxes
+        var_url = tk.BooleanVar(value=bool(buckets.get("url")))
+        var_mail = tk.BooleanVar(value=bool(buckets.get("email")))
+        var_other = tk.BooleanVar(value=bool(buckets.get("other")))
+        opts = tk.Frame(win, bg=DARK_PANEL)
+        opts.pack(fill="x", padx=14, pady=(6, 6))
+        tk.Checkbutton(opts, text="Fix URL issues", variable=var_url, bg=DARK_PANEL, fg=FG_TEXT, selectcolor=DARK_PANEL_2, activebackground=DARK_PANEL, activeforeground=FG_TEXT).pack(anchor="w")
+        tk.Checkbutton(opts, text="Fix Email issues", variable=var_mail, bg=DARK_PANEL, fg=FG_TEXT, selectcolor=DARK_PANEL_2, activebackground=DARK_PANEL, activeforeground=FG_TEXT).pack(anchor="w")
+        tk.Checkbutton(opts, text="Fix Other dangerous controls", variable=var_other, bg=DARK_PANEL, fg=FG_TEXT, selectcolor=DARK_PANEL_2, activebackground=DARK_PANEL, activeforeground=FG_TEXT).pack(anchor="w")
+
+        # Buttons
+        btns = tk.Frame(win, bg=DARK_PANEL)
+        btns.pack(fill="x", padx=14, pady=(6, 12))
+        out: Dict[str, bool] = {}
+
+        def on_ok():
+            out.update(url=bool(var_url.get()), email=bool(var_mail.get()), other=bool(var_other.get()))
+            win.destroy()
+
+        def on_cancel():
+            out.clear()
+            win.destroy()
+
+        ttk.Button(btns, text="Sanitize Selected", command=on_ok).pack(side="right")
+        ttk.Button(btns, text="Cancel", command=on_cancel).pack(side="right", padx=(0, 8))
+
+        win.update_idletasks()
+        try:
+            px, py = self.winfo_rootx(), self.winfo_rooty()
+            pw, ph = self.winfo_width(), self.winfo_height()
+            ww, wh = max(520, win.winfo_reqwidth()), max(300, win.winfo_reqheight())
+            x = px + max(0, (pw - ww) // 2)
+            y = py + max(0, (ph - wh) // 3)
+            win.geometry(f"{ww}x{wh}+{x}+{y}")
+        except Exception:
+            pass
+        win.deiconify()
+        win.lift()
+        win.focus_set()
+        win.wait_window()
+        return out if out else None
+
+    # Selective sanitize: reuse minimal rules but honor the chosen categories
+    def _sanitize_line_selective(self, line: str, choice: Dict[str, bool]) -> Optional[str]:
+        """
+        Implement selective sanitization without changing your utils API by composing
+        sanitize_line_minimal and per-chunk cleanup.
+
+        Strategy:
+          - If all True -> sanitize_line_minimal(line)
+          - Else, we run a small inlined dispatcher for this line:
+              • URLs -> sanitize iff choice['url']
+              • Emails -> sanitize iff choice['email']
+              • Else -> low-aggression cleanup iff choice['other']
+        """
+        if choice.get("url") and choice.get("email") and choice.get("other"):
+            return sanitize_line_minimal(line)
+
+        # Local lightweight re-implementation, aligned with utils' dispatcher
+        import regex as _re
+        from string_safety_utils import (
+            _SCHEME_URL_RE as SRE,
+            _HOSTLIKE_RE as HRE,
+            _EMAIL_RE as ERE,
+            url_token_sanitize,
+            email_token_sanitize,
+            deceptive_line_sanitize,
         )
-        if not messagebox.askyesno("Sanitize line", msg, icon="warning", default="yes"):
+
+        def iter_urls(s: str):
+            covered = [False] * len(s)
+            for m in SRE.finditer(s):
+                yield ("scheme", m.start(), m.end(), m.group(1));  covered[m.start():m.end()] = [True]* (m.end()-m.start())
+            for m in HRE.finditer(s):
+                if any(covered[i] for i in range(m.start(), min(m.end(), len(s)))):
+                    continue
+                yield ("hostlike", m.start(), m.end(), m.group(1))
+                covered[m.start():m.end()] = [True]* (m.end()-m.start())
             return
-        new_line = line_text
-        rep = deceptive_line_sanitize(new_line, low_aggression=False)
-        if rep is not None:
-            new_line = rep
-        if new_line != line_text:
-            txt.delete(f"{line_no}.0", f"{line_no}.end")
-            txt.insert(f"{line_no}.0", new_line)
-            tab["dirty"] = True
-            self._update_status_for_tab(tab)
-            self._schedule_draw_gutters(tid, fast=True)
+
+        changed = False
+        out: List[str] = []
+        i = 0
+        # URLs
+        url_spans = list(iter_urls(line))
+        for _, st, en, tok in url_spans:
+            if st > i:
+                seg = line[i:st]
+                if choice.get("other"):
+                    rep = deceptive_line_sanitize(seg, low_aggression=True, prefer_silent_removal=True)
+                    out.append(rep if rep is not None else seg); changed |= (rep is not None)
+                else:
+                    out.append(seg)
+            if choice.get("url"):
+                rep = url_token_sanitize(tok)
+                out.append(rep if rep is not None else tok); changed |= (rep is not None)
+            else:
+                out.append(tok)
+            i = en
+        tail = line[i:]
+
+        # Emails (non-overlapping with URLs)
+        covered_tail = [False] * len(tail)
+        j = 0
+        for m in ERE.finditer(tail):
+            if any(covered_tail[k] for k in range(m.start(), m.end())):
+                continue
+            if m.start() > j:
+                seg = tail[j:m.start()]
+                if choice.get("other"):
+                    rep = deceptive_line_sanitize(seg, low_aggression=True, prefer_silent_removal=True)
+                    out.append(rep if rep is not None else seg); changed |= (rep is not None)
+                else:
+                    out.append(seg)
+            tok = m.group(0)
+            if choice.get("email"):
+                rep = email_token_sanitize(tok)
+                out.append(rep if rep is not None else tok); changed |= (rep is not None)
+            else:
+                out.append(tok)
+            j = m.end()
+        rest = tail[j:]
+
+        if rest:
+            if choice.get("other"):
+                rep = deceptive_line_sanitize(rest, low_aggression=True, prefer_silent_removal=True)
+                out.append(rep if rep is not None else rest); changed |= (rep is not None)
+            else:
+                out.append(rest)
+
+        res = "".join(out)
+        return res if changed else None
 
     # =====================================================================
     # Utils
@@ -400,10 +603,7 @@ class TextPanel:
     # =====================================================================
 
     def _files_panel_selected_path(self) -> Optional[Path]:
-        """
-        Returns the currently selected Path from the File panel, if any.
-        We rely on FilePanel setting `self._selected_path` as the user moves around.
-        """
+        """Return selected Path from sibling File panel, if any."""
         try:
             p = getattr(self, "_selected_path", None)
             return Path(p) if p else None
@@ -411,11 +611,6 @@ class TextPanel:
             return None
 
     def file_open_selected(self):
-        """
-        Same behavior as double-clicking the selected file in the File panel:
-          - For files: prompt 'System default vs Open in Zeropad'.
-          - If 'Open in Zeropad': guess encoding, allow override, then open in a new tab.
-        """
         p = self._files_panel_selected_path()
         if not p:
             messagebox.showinfo("Open Selected", "No item selected in the File panel.")
@@ -424,7 +619,7 @@ class TextPanel:
             messagebox.showinfo("Open Selected", "The selected item is a folder. Pick a file.")
             return
 
-        # Reuse the FilePanel's chooser if available (keeps behavior identical to double-click)
+        # Reuse FilePanel chooser if present
         if hasattr(self, "_prompt_open_file") and callable(getattr(self, "_prompt_open_file")):
             self._prompt_open_file(p)
             return
@@ -462,13 +657,11 @@ class TextPanel:
             return
         txt: tk.Text = tab["text"]
         try:
-            # Clear Tk's internal modified flag & undo stack; keep our own dirty = False.
             txt.edit_reset()
             txt.edit_modified(False)
         except Exception:
             pass
         tab["dirty"] = False
-        # Re-title without a star
         self._retitle_tab(
             tid,
             tab.get("title") or (tab.get("path").name if tab.get("path") else "Untitled"),
@@ -588,7 +781,7 @@ class TextPanel:
         txt.bind("<Button-5>", lambda _e, t=tid: self._schedule_draw_gutters(t), add="+")
         txt.bind("<Control-a>", lambda e, t=tid: (txt.tag_add("sel", "1.0", "end-1c"), "break"))
 
-        # Click unhappy faces to sanitize that line
+        # Click faces to open a simple legend
         face.bind("<Button-1>", lambda e, t=tid: self._on_face_click(t, e))
 
         # Title & first paint
@@ -596,6 +789,7 @@ class TextPanel:
         self._update_status_for_tab(tab)
         self._schedule_draw_gutters(tid, fast=True)
         return tid
+
 
     # ==================================================
     # Rename hook from FilePanel (replacement, squelched)
@@ -639,11 +833,6 @@ class TextPanel:
     # Save Over Selected (File menu) — overwrite selected file *content only*
     # =====================================================================
     def save_over_selected(self):
-        """
-        Overwrite the *content* of the currently selected file in the File Manager
-        using the active tab's text. Encoding comes from the active tab by default,
-        but the user can pick a different one inline (handled by editor_io.encode_text_inline).
-        """
         tab = self._current_tab()
         if not tab:
             messagebox.showinfo("Save Over Selected", "No text tab is active.")
@@ -692,18 +881,16 @@ class TextPanel:
             line, col = int(line_s), int(col_s) + 1
         except Exception:
             line, col = 1, 1
-        total = int(txt.index("end-1c").split(".")[0])
         enc = tab.get("encoding") or "utf-8"
         dirty_star = "*" if tab.get("dirty") else ""
         path_str = str(tab["path"]) if tab.get("path") else "(untitled)"
         self._status_path_var.set(f"{path_str}{dirty_star}")
-        self._status_info.config(text=f"Ln {line}, Col {col} | {total} lines | {enc}")
+        self._status_info.config(text=f"Ln {line}, Col {col}  | {enc}")
 
     def _on_modified(self, tid: int):
         tab = self._tabs.get(tid)
         if not tab:
             return
-        # Ignore programmatic edits
         if int(tab.get("squelch_mod", 0)) > 0:
             try:
                 tab["text"].edit_modified(False)
@@ -712,13 +899,11 @@ class TextPanel:
             return
 
         tab["dirty"] = True
-        # Clear Tk's modified flag so future edits still fire <<Modified>>
         try:
             tab["text"].edit_modified(False)
         except Exception:
             pass
 
-        # Star in tab title + status
         base_title = tab.get("title") or (tab.get("path").name if tab.get("path") else "Untitled")
         self._retitle_tab(tid, base_title, dirty=True)
         self._update_status_for_tab(tab)
@@ -745,7 +930,6 @@ class TextPanel:
 
         txt: tk.Text = tab["text"]
 
-        # Replace under squelch
         self._mod_squelch_begin(tab)
         try:
             txt.delete("1.0", "end")
@@ -759,7 +943,6 @@ class TextPanel:
         finally:
             self.after_idle(lambda t=tab: (self._mod_squelch_end(t), t["text"].edit_modified(False)))
 
-        # Retitle & status (no star)
         title = (tab["path"].name if tab.get("path") else tab.get("title") or "Untitled")
         self._retitle_tab(id(tab["frame"]), title, dirty=False)
         self._update_status_for_tab(tab)
@@ -771,13 +954,12 @@ class TextPanel:
         try:
             enc = tab.get("encoding") or "utf-8"
             add_bom = bool(tab.get("add_bom"))
-            data = encode_text(s, enc, add_bom)  # editor_io should support add_bom
+            data = encode_text(s, enc, add_bom)
             save_to_path(target, data)
         except Exception as e:
             messagebox.showerror("Save failed", f"Could not save to {target}:\n{e}")
             return
 
-        # Update model under squelch (avoid <<Modified>> from relabel/flag flips)
         txt: tk.Text = tab["text"]
         self._mod_squelch_begin(tab)
         try:
@@ -793,6 +975,7 @@ class TextPanel:
             self.after_idle(lambda t=tab: (self._mod_squelch_end(t), t["text"].edit_modified(False)))
 
         self._update_status_for_tab(tab)
+        self._schedule_draw_gutters(id(tab["frame"]), fast=True)
 
     def open_with_zeropad(self, path: Path, override_encoding: str | None = None):
         """Open file; normalize EOLs to LF. If override_encoding is provided, use it."""
@@ -817,8 +1000,8 @@ class TextPanel:
         self._add_tab_to_nb(frame, title=Path(path).name)
         self._nb.select(frame)
 
-        # Ensure the tab is clean right after creation
         self._force_clean_state(tid)
+        self._schedule_draw_gutters(tid, fast=True)
         return tid
 
     # =====================================================================
@@ -908,3 +1091,241 @@ class TextPanel:
                 return "break"  # don't let ttk select '+'
 
         # For normal tabs, just let ttk handle selection.
+
+    def _open_face_legend_dialog(self, tid: int, line_no: int):
+        """
+        Modal dialog to sanitize the *line's* text for the given tab.
+        Modes:
+        - Strip only: keep ASCII printable [0x20..0x7E]
+        - Confusables skeleton → Strip: confusable_skeleton(line) then keep [0x20..0x7E]
+        On OK: replace that line in the tab's Text widget. On Cancel: no changes.
+        Includes dark-theme hover styles for radio/buttons. Cancel is on the right.
+        """
+        import tkinter as tk
+        from tkinter import ttk
+
+        # ---- resolve tab + text widget ----
+        tab = self._tabs.get(tid)
+        if not tab:
+            return
+        textw: tk.Text = tab["text"]
+
+        # ---- helpers ----
+        def ascii_printable_strip(s: str) -> str:
+            # Keep only ASCII printable chars 0x20 (space) to 0x7E (~)
+            return "".join(ch for ch in s if 0x20 <= ord(ch) <= 0x7E)
+
+        # Try the likely module first, then the alternative the project mentioned.
+        try:
+            # If your function lives here:
+            from basic_string_safety_utils import confusable_skeleton
+        except Exception:
+            try:
+                # Or here, if your project uses this name:
+                from basis_string_safety import confusable_skeleton
+            except Exception:
+                # Fallback: no-op skeleton
+                def confusable_skeleton(text: str, mapping=None) -> str:
+                    return text
+
+        # ---- parent toplevel (for proper modality) ----
+        try:
+            parent = self.winfo_toplevel()
+        except Exception:
+            parent = getattr(self, "root", None)
+        if parent is None:
+            parent = tk._get_default_root()
+
+        # ---- snapshot scroll + caret position ----
+        yview = textw.yview()
+        insert_index = textw.index("insert")
+        insert_line = int(insert_index.split(".")[0])
+        insert_col = int(insert_index.split(".")[1]) if insert_line == int(line_no) else None
+
+        # ---- get current line text ----
+        line_start = f"{int(line_no)}.0"
+        line_end   = f"{int(line_no)}.end"  # excludes trailing newline in Text
+        try:
+            original_line = textw.get(line_start, line_end)
+        except Exception:
+            original_line = ""
+
+        # ---- dialog (hidden → mapped → grabbed) ----
+        win = tk.Toplevel(parent)
+        self._legend_win = win
+        if getattr(self, "_legend_open", False):
+            try:
+                self._legend_win.lift(); self._legend_win.focus_set()
+            except Exception:
+                pass
+            return
+        self._legend_open = True
+
+        # Dark panel styling
+        win.withdraw()
+        win.transient(parent)
+        win.title(f"Sanitize Line {line_no}")
+        win.resizable(False, False)
+        try:
+            win.configure(bg=DARK_PANEL)
+        except Exception:
+            pass
+
+        # ---- ttk styles (dark + hover) ----
+        style = ttk.Style(win)
+        # Radiobutton
+        style.configure(
+            "Dark.TRadiobutton",
+            background=DARK_PANEL,
+            foreground=FG_TEXT
+        )
+        style.map(
+            "Dark.TRadiobutton",
+            foreground=[("active", FG_TEXT)],
+            background=[("active", DARK_PANEL_2)]
+        )
+        # Buttons
+        style.configure(
+            "Dark.TButton",
+            background=DARK_PANEL_2,
+            foreground=FG_TEXT,
+            padding=(10, 4)
+        )
+        style.map(
+            "Dark.TButton",
+            background=[("active", "#162033")],
+            foreground=[("active", FG_TEXT)]
+        )
+
+        container = ttk.Frame(win, padding=12, style="Dark.TFrame")
+        # Some themes ignore TFrame bg; add a manual bg label wrapper if needed
+        try:
+            style.configure("Dark.TFrame", background=DARK_PANEL)
+        except Exception:
+            pass
+
+        container.grid(row=0, column=0, sticky="nsew")
+        win.columnconfigure(0, weight=1)
+        win.rowconfigure(0, weight=1)
+
+        lbl = ttk.Label(container, text=f"Choose sanitation for line {line_no}", style="Dark.TLabel")
+        try:
+            style.configure("Dark.TLabel", background=DARK_PANEL, foreground=FG_TEXT)
+        except Exception:
+            pass
+        lbl.grid(row=0, column=0, columnspan=2, sticky="w", pady=(0, 8))
+
+        mode = tk.StringVar(value="strip")  # 'strip' or 'skeleton_strip'
+
+        strip_rb = ttk.Radiobutton(
+            container, text="Strip only (keep ASCII 0x20–0x7E)", variable=mode, value="strip",
+            style="Dark.TRadiobutton"
+        )
+        skel_rb = ttk.Radiobutton(
+            container, text="Confusables skeleton → Strip", variable=mode, value="skeleton_strip",
+            style="Dark.TRadiobutton"
+        )
+        strip_rb.grid(row=1, column=0, columnspan=2, sticky="w")
+        skel_rb.grid(row=2, column=0, columnspan=2, sticky="w", pady=(4, 0))
+
+        # ---- buttons (OK on left, Cancel on right) ----
+        btns = ttk.Frame(container, style="Dark.TFrame")
+        btns.grid(row=3, column=0, columnspan=2, sticky="e", pady=(12, 0))
+
+        def close_modal(*_):
+            try:
+                win.grab_release()
+            except Exception:
+                pass
+            self._legend_open = False
+            try:
+                del self._legend_win
+            except Exception:
+                pass
+            win.destroy()
+
+        def apply_and_close():
+            chosen = mode.get()
+            if chosen == "strip":
+                new_line = ascii_printable_strip(original_line)
+            else:
+                try:
+                    new_line = confusable_skeleton(original_line)
+                except Exception:
+                    new_line = original_line
+                new_line = ascii_printable_strip(new_line)
+
+            # Replace the line (single undo step)
+            textw.edit_separator()
+            textw.delete(line_start, line_end)
+            textw.insert(line_start, new_line)
+
+            # Preserve caret on that line if it was there
+            if insert_col is not None:
+                new_col = min(insert_col, len(new_line))
+                try:
+                    textw.mark_set("insert", f"{int(line_no)}.{new_col}")
+                except Exception:
+                    pass
+
+            # Restore scroll
+            try:
+                textw.yview_moveto(yview[0])
+            except Exception:
+                pass
+
+            # Repaint gutters promptly
+            try:
+                self._schedule_draw_gutters(tid, fast=True)
+            except Exception:
+                pass
+
+            close_modal()
+
+        ok_btn     = ttk.Button(btns, text="OK",     command=apply_and_close, style="Dark.TButton")
+        cancel_btn = ttk.Button(btns, text="Cancel", command=close_modal,     style="Dark.TButton")
+        # Put Cancel on the other side (rightmost)
+        ok_btn.grid(row=0, column=0, padx=(0, 8))
+        cancel_btn.grid(row=0, column=1)
+
+        # shortcuts
+        win.bind("<Return>", lambda e: apply_and_close())
+        win.bind("<Escape>", close_modal)
+
+        # center near parent
+        win.update_idletasks()
+        try:
+            px = parent.winfo_rootx() + (parent.winfo_width() // 2)
+            py = parent.winfo_rooty() + (parent.winfo_height() // 2)
+            w = max(win.winfo_reqwidth(), 420)
+            h = max(win.winfo_reqheight(), 160)
+            x = max(px - w // 2, 0)
+            y = max(py - h // 2, 0)
+            win.geometry(f"{w}x{h}+{x}+{y}")
+        except Exception:
+            pass
+
+        # show safely after mapping (prevents "not viewable" grab error)
+        def _show_modal():
+            try:
+                win.deiconify()
+                win.update_idletasks()
+                try:
+                    win.wait_visibility()
+                except Exception:
+                    pass
+                try:
+                    win.grab_set()
+                except tk.TclError:
+                    pass
+                win.focus_set()
+                win.wait_window()
+            finally:
+                if getattr(self, "_legend_open", False):
+                    self._legend_open = False
+                try:
+                    del self._legend_win
+                except Exception:
+                    pass
+
+        win.after(0, _show_modal)

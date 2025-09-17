@@ -48,12 +48,7 @@ from datetime import datetime
 from typing import Optional, Tuple, Dict, List
 
 # ---- safety utils (project file) ----
-from string_safety_utils import (
-    bad_filename_check,
-    bad_filename_sanitize,
-    deceptive_line_check,
-    deceptive_line_sanitize,
-)
+from basic_string_safety_utils import suspicious_filename, suspicious_filename_strict
 
 # ---- Optional GIO + GdkPixbuf (no GTK) ----
 try:
@@ -125,12 +120,6 @@ class FilePanel:
                 background=[("active", self._BG_PANEL), ("!disabled", self._BG_PANEL)],
                 foreground=[("active", self._FG_TEXT), ("!disabled", self._FG_TEXT)])
 
-        style.configure("Toolbar.TButton", background=self._BTN_BG, foreground=self._FG_TEXT,
-                        borderwidth=0, padding=(8, 2))
-        style.map("Toolbar.TButton",
-                background=[("active", self._BTN_BG_H), ("disabled", self._BTN_BG_D)],
-                foreground=[("disabled", self._FG_DIM)])
-
         # Icon-only toolbar buttons (square-ish)
         style.configure("Icon.TButton",
                         background=self._BTN_BG, foreground=self._FG_TEXT,
@@ -139,14 +128,14 @@ class FilePanel:
                 background=[("active", self._BTN_BG_H), ("disabled", self._BTN_BG_D)],
                 foreground=[("disabled", self._FG_DIM)])
 
-        # Make the four action buttons noticeably narrower
+        # Make action buttons narrower
         style.configure("Primary.TButton", background=self._ACC_BG, foreground="#ffffff",
-                        borderwidth=0, padding=(4, 2))
+                        borderwidth=0, padding=(2, 1))
         style.map("Primary.TButton",
                 background=[("active", self._ACC_BG_H), ("disabled", self._ACC_BG_D)],
                 foreground=[("disabled", self._FG_DIM)])
         style.configure("Secondary.TButton", background=self._BTN_BG, foreground=self._FG_TEXT,
-                        borderwidth=0, padding=(4, 2))
+                        borderwidth=0, padding=(2, 1))
         style.map("Secondary.TButton",
                 background=[("active", self._BTN_BG_H)],
                 foreground=[("disabled", self._FG_DIM)])
@@ -175,14 +164,14 @@ class FilePanel:
                         command=self._on_toggle_mime, style="NoHover.TCheckbutton",
                         takefocus=False).pack(side="left", padx=(0, 12), pady=6)
 
-        # Buttons for Up and Home
+        # Icon-only, square Up and Home
         self.up_btn = ttk.Button(
-            topbar, text="↑ Up", style="Icon.TButton", width=5, command=self._go_up
+            topbar, text="↑", style="Icon.TButton", width=2, command=self._go_up
         )
         self.up_btn.pack(side="left", padx=(0, 6), pady=6)
 
         self.home_btn = ttk.Button(
-            topbar, text="⌂ Home", style="Icon.TButton", width=8,
+            topbar, text="⌂", style="Icon.TButton", width=2,
             command=lambda: self.set_cwd(Path.home())
         )
         self.home_btn.pack(side="left", padx=(0, 8), pady=6)
@@ -209,11 +198,13 @@ class FilePanel:
         self._resizing_col = False
         self._resized_col: Optional[str] = None
         self.tree.bind("<ButtonPress-1>", self._on_tree_press, add="+")
+        # NOTE: we replace _on_tree_release below, it will also trigger selection load
         self.tree.bind("<ButtonRelease-1>", self._on_tree_release, add="+")
         self.tree.bind("<Configure>", lambda _e: self._apply_fixed_widths())
 
-        self.tree.bind("<<TreeviewSelect>>", self._on_tree_select)
-        self.tree.bind("<Double-1>", self._on_tree_double_click)
+        # Bind selection & double-click via our invoker (exists now)
+        self.tree.bind("<<TreeviewSelect>>", self._invoke_tree_select)
+        self.tree.bind("<Double-1>",        self._on_tree_double_click)
 
         # Node map and state
         self._node: Dict[str, Dict] = {}
@@ -290,10 +281,10 @@ class FilePanel:
         # Buttons (Duplicate | Delete | Accept | Cancel)
         btns = tk.Frame(bottom, bg=self._BG_PANEL)
         btns.pack(side="top", fill="x", padx=8, pady=(0, 8))
-        self.accept_btn    = ttk.Button(btns, text="Accept",    command=self._on_accept,    style="Primary.TButton", width=8)
-        self.cancel_btn    = ttk.Button(btns, text="Cancel",    command=self._on_cancel,    style="Secondary.TButton", width=8)
-        self.delete_btn    = ttk.Button(btns, text="Delete",    command=self._on_delete,    style="Secondary.TButton", width=8)
-        self.duplicate_btn = ttk.Button(btns, text="Duplicate", command=self._on_duplicate, style="Secondary.TButton", width=10)
+        self.accept_btn    = ttk.Button(btns, text="Accept",    command=self._on_accept,    style="Primary.TButton")
+        self.cancel_btn    = ttk.Button(btns, text="Cancel",    command=self._on_cancel,    style="Secondary.TButton")
+        self.delete_btn    = ttk.Button(btns, text="Delete",    command=self._on_delete,    style="Secondary.TButton")
+        self.duplicate_btn = ttk.Button(btns, text="Duplicate", command=self._on_duplicate, style="Secondary.TButton")
 
         # Right-justified group: Cancel (far right), Accept (to its left)
         self.cancel_btn.pack(side="right")
@@ -326,7 +317,7 @@ class FilePanel:
             self._cleanup_hooks = []
         self._cleanup_hooks.append(self._cancel_fs_refresh)
 
-        # Make sure Accept is disabled when nothing is selected and not creating
+        # Ensure Accept is disabled when nothing is selected and not creating
         self._set_accept_enabled(False)
 
     # ---------------- MIME toggle & Row0 ----------------
@@ -372,21 +363,71 @@ class FilePanel:
     # ---------------- Safety helpers ----------------
 
     def _filename_issues(self, name: str):
-        issues = []
-        for _i, msg in deceptive_line_check(name, low_aggression=False):
-            issues.append(msg)
-        for _i, msg in bad_filename_check(name):
-            issues.append(msg)
-        return issues
+        """
+        Aggregate filename issues with an attack-first lens.
+
+        Buckets:
+        - Deceptive/invisible/control/bidi/etc. (aggressive per-line scan)
+        - Filename-specific hazards (ASCII metacharacters, path prefixes, LF/CR)
+
+        Returns a flat, de-duplicated list of human-readable issue strings.
+        """
+        msgs = []
+
+        # Aggressive deceptive scan over the *name* (line-level model)
+        try:
+            for _i, msg in deceptive_line_check(name, low_aggression=False):
+                msgs.append(msg)
+        except Exception:
+            pass
+
+        # Filename-specific hazards (glob, redirects, slashes, start rules, LF/CR)
+        try:
+            for _i, msg in bad_filename_check(name):
+                msgs.append(msg)
+        except Exception:
+            pass
+
+        # Deduplicate while preserving order (short circuit noisy repeats)
+        seen = set()
+        out = []
+        for m in msgs:
+            if m not in seen:
+                seen.add(m)
+                out.append(m)
+        return out
 
     def _is_name_safe(self, name: str) -> bool:
-        return (name is None) or (name == "") or (len(self._filename_issues(name)) == 0)
+        """
+        "Safe" means it passes BOTH checks (strict + non-strict).
+        Used by sorting and by older call sites that expect a boolean OK/NOT.
+        """
+        face, pn, ps = self._filename_face_state(name)
+        return pn and ps
 
     def _tree_safety_icon(self, name: str) -> str:
-        return "" if self._is_name_safe(name) else "😡"
+        """
+        Subpanel 2 (tree) face rules:
+        - Passes BOTH: show EMPTY cell (no happy face)
+        - Passes NON-STRICT only: show ORDINARY (😐)
+        - Passes NEITHER: show UNHAPPY (😡)
+        """
+        face, pass_nonstrict, pass_strict = self._filename_face_state(name)
+        if pass_nonstrict and pass_strict:
+            return ""          # hide happy in the tree
+        if pass_nonstrict and not pass_strict:
+            return "😐"        # ordinary
+        return "😡"            # unhappy
 
     def _meta_safety_icon(self, name: str) -> str:
-        return "🙂" if self._is_name_safe(name) else "😡"
+        """
+        Subpanel 3 (metadata) face rules:
+        - Happy if passes BOTH
+        - Ordinary if passes ONLY non-strict
+        - Unhappy otherwise
+        """
+        face, _pn, _ps = self._filename_face_state(name)
+        return face
 
     # ---------------- Column model ----------------
 
@@ -477,11 +518,16 @@ class FilePanel:
                     cur = int(self.tree.column(self._resized_col, option="width"))
                     caps = self._dynamic_max_caps()
                     cur = max(self._col_min_px.get(self._resized_col, 50),
-                              min(caps.get(self._resized_col, 10_000), cur))
+                            min(caps.get(self._resized_col, 10_000), cur))
                     self._col_target_px[self._resized_col] = cur
                 except Exception:
                     pass
             self._apply_fixed_widths()
+        # Regardless of resize, ensure selection handler runs so metadata loads
+        try:
+            self._invoke_tree_select(None)
+        except Exception:
+            pass
         self._resizing_col = False
         self._resized_col = None
 
@@ -780,50 +826,6 @@ class FilePanel:
 
         self._update_meta_safety_from_entry()
 
-    # ---------------- Selection & double-click ----------------
-
-    def _on_tree_select(self, _evt):
-        iid = self._first_selection()
-        if not iid:
-            return
-        info = self._node.get(iid, {})
-        kind = info.get("kind")
-
-        if kind == "create_dir":
-            self._enter_create_mode("dir"); return
-        if kind == "create_file":
-            self._enter_create_mode("file"); return
-
-        if kind in ("dir", "file"):
-            path = info.get("path")
-            if path:
-                self._selected_path = path
-                self._create_mode = None
-                self._load_metadata_from_path(path)
-
-    def _enter_create_mode(self, what: str):
-        self._selected_path = None
-        self._create_mode = what
-        now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        mode = "rwxr-xr-x" if what == "dir" else "rw-r--r--"
-        kind = "Folder" if what == "dir" else "File"
-        size = "-" if what == "dir" else "0 B"
-
-        self.meta_filename.delete(0, tk.END)
-        if self._mime_enabled():
-            self.meta_icon_img.config(image=""); self.meta_icon_img.image = None
-            self.meta_mime_text.config(text="")
-        else:
-            self.meta_kind_value.config(text=kind)
-        self.meta_size.config(text=size)
-        self.meta_modified.delete(0, tk.END); self.meta_modified.insert(0, now)
-        self.meta_mode.delete(0, tk.END);     self.meta_mode.insert(0, mode)
-
-        self._meta_original = {"filename": "", "modified": now, "mode": mode}
-        self._set_accept_enabled(False)
-        self._update_meta_safety_from_entry()
-        self.meta_filename.focus_set()
-
     def get_selected_path(self) -> Optional[Path]:
         """Return the currently selected filesystem Path (or None)."""
         # Prefer our tracked selection
@@ -1064,42 +1066,191 @@ class FilePanel:
             self._set_accept_enabled(False)
 
     # ---------------- Safety dialog (metadata face only) ----------------
-
     def _on_meta_flag_clicked(self):
-        current = self.meta_filename.get()
-        issues = self._filename_issues(current)
-        if not issues:
+        """
+        Subpanel 3: Clicking the face should prompt to run `detox` on the selected file,
+        but ONLY when the face is not 'happy'. If confirmed, call detox on the file.
+        """
+        name = self.meta_filename.get()
+        face, pass_nonstrict, pass_strict = self._filename_face_state(name)
+        if face == "🙂":
+            return  # happy → non-clickable/no-op
+
+        p = self.get_selected_path()
+        if not p or not p.exists():
             return
-        self._show_safety_dialog_and_maybe_sanitize(current)
+
+        label = f"folder:\n{p}" if p.is_dir() else f"file:\n{p}"
+        if not messagebox.askyesno(
+            "Detox filename?",
+            f"The current {label}\n\nappears unsafe. Do you want to run `detox` on it now?",
+            icon="question",
+            default="no",
+        ):
+            return
+
+        self._detox_selected_path()
 
     def _show_safety_dialog_and_maybe_sanitize(self, name: str):
-        issues = self._filename_issues(name)
-        if not issues:
-            return
-        msg = "The current filename has potential issues:\n\n- " + "\n- ".join(issues) + \
-              "\n\nSanitize now? (You can still review and Accept later.)"
-        if messagebox.askyesno("Filename Safety", msg, icon="warning", default="yes"):
-            new_name = name
-            dls = deceptive_line_sanitize(new_name, low_aggression=False)
-            if dls is not None:
-                new_name = dls
-            bfs = bad_filename_sanitize(new_name)
-            if bfs is not None:
-                new_name = bfs
+        """
+        Bucket issues and offer selective fixes:
+        - Deceptive/Invisible/Controls: uses deceptive_line_sanitize(low_aggression=False)
+        - Filename Hazards: uses bad_filename_sanitize()
 
+        If the user selects neither, we do nothing.
+        """
+        # Build buckets
+        deceptive_msgs = []
+        fname_msgs     = []
+        try:
+            deceptive_msgs = [m for _i, m in deceptive_line_check(name, low_aggression=False)]
+        except Exception:
+            deceptive_msgs = []
+        try:
+            fname_msgs = [m for _i, m in bad_filename_check(name)]
+        except Exception:
+            fname_msgs = []
+
+        if not deceptive_msgs and not fname_msgs:
+            return
+
+        # Dialog
+        win = tk.Toplevel(self)
+        win.withdraw()
+        win.title("Filename Safety — Selective Fixes")
+        win.configure(bg=self._BG_PANEL)
+        win.transient(self)
+        win.grab_set()
+
+        # Header
+        tk.Label(
+            win,
+            text="The current filename has potential issues. Select what to fix:",
+            bg=self._BG_PANEL, fg=self._FG_TEXT, anchor="w", justify="left", wraplength=640
+        ).pack(fill="x", padx=14, pady=(14, 6))
+
+        # Buckets UI
+        body = tk.Frame(win, bg=self._BG_PANEL)
+        body.pack(fill="both", expand=True, padx=14, pady=(0, 8))
+
+        def add_bucket(title: str, items: list[str]):
+            tk.Label(body, text=title, bg=self._BG_PANEL, fg=self._FG_TEXT, anchor="w").pack(fill="x", pady=(8, 2))
+            if not items:
+                tk.Label(body, text="(none)", bg=self._BG_PANEL, fg=self._FG_DIM, anchor="w").pack(fill="x")
+            else:
+                lb = tk.Listbox(body, height=min(7, max(1, len(items))),
+                                bg=self._BG_ENTRY, fg=self._FG_TEXT,
+                                activestyle="none", highlightthickness=0, relief="flat")
+                for m in items:
+                    lb.insert("end", f"- {m}")
+                lb.pack(fill="x")
+
+        add_bucket("Deceptive/Invisible/Controls:", deceptive_msgs)
+        add_bucket("Filename Hazards (metacharacters, path prefixes):", fname_msgs)
+
+        # Checkboxes
+        opts = tk.Frame(win, bg=self._BG_PANEL)
+        opts.pack(fill="x", padx=14, pady=(6, 6))
+        var_decept = tk.BooleanVar(value=bool(deceptive_msgs))
+        var_fname  = tk.BooleanVar(value=bool(fname_msgs))
+        tk.Checkbutton(
+            opts, text="Fix Deceptive/Invisible/Controls",
+            variable=var_decept, bg=self._BG_PANEL, fg=self._FG_TEXT,
+            selectcolor=self._BTN_BG, activebackground=self._BG_PANEL, activeforeground=self._FG_TEXT
+        ).pack(anchor="w")
+        tk.Checkbutton(
+            opts, text="Fix Filename Hazards",
+            variable=var_fname, bg=self._BG_PANEL, fg=self._FG_TEXT,
+            selectcolor=self._BTN_BG, activebackground=self._BG_PANEL, activeforeground=self._FG_TEXT
+        ).pack(anchor="w")
+
+        # Buttons
+        btns = tk.Frame(win, bg=self._BG_PANEL)
+        btns.pack(fill="x", padx=14, pady=(8, 12))
+
+        def close():
+            try:
+                win.destroy()
+            except Exception:
+                pass
+
+        def apply_fixes():
+            nonlocal name
+            do_decept = bool(var_decept.get())
+            do_fname  = bool(var_fname.get())
+            if not do_decept and not do_fname:
+                close()
+                return
+
+            new_name = name
+
+            # Apply deceptive/invisible cleanup (aggressive line sanitizer)
+            if do_decept:
+                try:
+                    rep = deceptive_line_sanitize(new_name, low_aggression=False, prefer_silent_removal=False)
+                    if rep is not None:
+                        new_name = rep
+                except Exception:
+                    pass
+
+            # Apply filename-hazard sanitizer
+            if do_fname:
+                try:
+                    rep = bad_filename_sanitize(new_name, prefer_silent_removal=False)
+                    if rep is not None:
+                        new_name = rep
+                except Exception:
+                    pass
+
+            # Write back if changed
             if new_name != name:
                 self.meta_filename.delete(0, tk.END)
                 self.meta_filename.insert(0, new_name)
+                # refresh face and Accept-enable logic
                 self._on_meta_edited(None)
-            else:
-                messagebox.showinfo("Sanitize", "No changes were necessary after sanitation.")
+            close()
+
+        ttk.Button(btns, text="Sanitize Selected", command=apply_fixes).pack(side="right")
+        ttk.Button(btns, text="Cancel", command=close).pack(side="right", padx=(0, 8))
+
+        # Place & show dialog
+        win.update_idletasks()
+        try:
+            px, py = self.winfo_rootx(), self.winfo_rooty()
+            pw, ph = self.winfo_width(), self.winfo_height()
+            ww, wh = max(560, win.winfo_reqwidth()), max(380, win.winfo_reqheight())
+            x = px + max(0, (pw - ww) // 2)
+            y = py + max(0, (ph - wh) // 3)
+            win.geometry(f"{ww}x{wh}+{x}+{y}")
+        except Exception:
+            pass
+        win.deiconify()
+        win.lift()
+        win.focus_set()
+        win.wait_window()
 
     def _update_meta_safety_from_entry(self):
         name = self.meta_filename.get()
-        icon = self._meta_safety_icon(name)
-        is_safe = (icon == "🙂")
-        self.meta_fname_flag.config(text=icon,
-                                    fg=(self._FG_TEXT if is_safe else self._ERR_RED))
+        face = self._meta_safety_icon(name)
+        is_happy = (face == "🙂")
+
+        # Update face + color
+        self.meta_fname_flag.config(
+            text=face,
+            fg=(self._FG_TEXT if is_happy else self._ERR_RED)
+        )
+
+        # Make the face clickable ONLY when not happy
+        try:
+            if is_happy:
+                self.meta_fname_flag.config(cursor="arrow")
+                # Unbind any prior bindings for safety; keep the lambda installed at init harmless
+                self.meta_fname_flag.unbind("<Button-1>")
+            else:
+                self.meta_fname_flag.config(cursor="hand2")
+                self.meta_fname_flag.bind("<Button-1>", lambda _e: self._on_meta_flag_clicked())
+        except Exception:
+            pass
 
     # ---------------- Misc helpers ----------------
 
@@ -1718,3 +1869,109 @@ class FilePanel:
         self._selected_path = dst
         self._select_path(dst)
         self._load_metadata_from_path(dst)
+
+    def _invoke_tree_select(self, evt):
+        """
+        Always handle selection changes:
+        - Delegate to _on_tree_select if it exists and is callable.
+        - Otherwise perform the default behavior (load metadata) here.
+        Also enforces Accept disabled when nothing is selected and not creating.
+        """
+        fn = getattr(self, "_on_tree_select", None)
+        if callable(fn):
+            return fn(evt)
+
+        # Fallback: replicate the essential selection behavior
+        iid = self._first_selection()
+        if not iid:
+            self._selected_path = None
+            if not getattr(self, "_create_mode", None):
+                self._set_accept_enabled(False)
+            return
+
+        info = self._node.get(iid, {})
+        kind = info.get("kind")
+        if kind in ("create_dir", "create_file"):
+            self._enter_create_mode("dir" if kind == "create_dir" else "file")
+            return
+
+        if kind in ("dir", "file"):
+            path = info.get("path")
+            if path:
+                self._selected_path = path
+                self._create_mode = None
+                self._load_metadata_from_path(path)
+                return
+
+        # If we get here, nothing actionable was selected
+        if not getattr(self, "_create_mode", None):
+            self._set_accept_enabled(False)
+
+    def _filename_face_state(self, name: str) -> tuple[str, bool, bool]:
+        """
+        Compute the face for a filename based on the new rules:
+
+        - Passes BOTH strict and non-strict  => Happy  (🙂)
+        - Passes non-strict ONLY            => Ordinary(😐)
+        - Passes NEITHER                    => Unhappy (😡)
+
+        Returns: (face_char, pass_nonstrict, pass_strict)
+        """
+        if not name:
+            # Empty name: treat as failing both (very defensive)
+            return ("😡", False, False)
+
+        try:
+            # suspicious_* returns True if suspicious, so we negate for "passes"
+            pass_nonstrict = not suspicious_filename(name, getattr(self, "_bold_font", None))
+        except Exception:
+            pass_nonstrict = False
+
+        try:
+            pass_strict = not suspicious_filename_strict(name)
+        except Exception:
+            pass_strict = False
+
+        if pass_nonstrict and pass_strict:
+            return ("🙂", True, True)     # happy
+        if pass_nonstrict and not pass_strict:
+            return ("😐", True, False)    # ordinary
+        return ("😡", False, False)        # unhappy
+
+    def _detox_selected_path(self):
+        """
+        Run `detox` on the currently selected path. Then refresh the panel.
+        We don't try to guess the new name; `detox` performs the rename in place.
+        """
+        p = self.get_selected_path()
+        if not p:
+            return
+        try:
+            # Call detox; let it print to user’s stderr/stdout via a small dialog if you prefer.
+            # Here we run it quietly.
+            res = subprocess.run(
+                ["detox", str(p)],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+            )
+            if res.returncode != 0:
+                messagebox.showerror(
+                    "Detox Failed",
+                    f"`detox` returned {res.returncode}.\n\nSTDERR:\n{res.stderr.strip() or '(none)'}"
+                )
+                return
+        except FileNotFoundError:
+            messagebox.showerror(
+                "Detox Not Found",
+                "The `detox` utility is not installed.\n\nOn Debian/Ubuntu:\n  sudo apt install detox"
+            )
+            return
+        except Exception as e:
+            messagebox.showerror("Detox Error", f"Could not run `detox`:\n{e}")
+            return
+
+        # Successful: refresh listing. We don't attempt to auto-select the new name.
+        self.refresh_file_panel(force=True)
+        self._selected_path = None
+        self._set_accept_enabled(False)
